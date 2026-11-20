@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import contract from '../game.contract.json';
 import { FUEL_MAX_UNITS, NIGHTS, TUNING } from '../src/sim/config';
+import { insertEntry, isValidName, readBoard, sortEntries } from '../src/leaderboard';
 import { distXZ } from '../src/sim/geometry';
 import { InputFormatError, InputTrack } from '../src/sim/inputs';
 import { eventLine, snapshotLine } from '../src/sim/output';
@@ -42,10 +43,16 @@ function empty(nightOrExtra: 1 | 2 | 3 | ScenarioFile = 1, extra: ScenarioFile =
   });
 }
 
-describe('contract v1.2', () => {
+describe('contract v1.3', () => {
   it('tuning matches the standard numbers', () => {
-    expect(contract.contract_version).toBe('1.2');
+    expect(contract.contract_version).toBe('1.3');
     expect(contract.tuning).toEqual(JSON.parse(JSON.stringify(TUNING)));
+  });
+
+  it('declares runnable bench and soak commands', () => {
+    expect(contract.bench_cmd).toBe('node scripts/bench.mjs');
+    expect(contract.soak_cmd).toBe('node scripts/soak.mjs');
+    expect(contract.run_cmd).toBe('node scripts/run.mjs');
   });
 
   it('has the new fuel / win / capacity keys and night durations', () => {
@@ -519,6 +526,31 @@ describe('output and determinism', () => {
       return lines;
     };
     expect(build()).toEqual(build());
+  });
+});
+
+describe('leaderboard (v1.3)', () => {
+  const entry = (name: string, score: number, achieved_at: string) => ({
+    name, score, nights_won: 1, achieved_at, seed: 7,
+  });
+
+  it('validates names (3–12 chars, Vietnamese accents allowed)', () => {
+    expect(isValidName('Mây')).toBe(true);
+    expect(isValidName('Ten_123')).toBe(true);
+    expect(isValidName('ab')).toBe(false);
+    expect(isValidName('bad name')).toBe(false);
+  });
+
+  it('sorts by score then earliest achievement and keeps top 10', () => {
+    const entries = Array.from({ length: 12 }, (_, i) =>
+      entry(`Player${i + 1}`, i < 2 ? 100 : i, `2026-11-2${i % 9}T00:00:00Z`),
+    );
+    const board = { entries: insertEntry(entries.slice(0, 11), entries[11]) };
+    const sorted = sortEntries(board.entries);
+    expect(sorted).toHaveLength(10);
+    expect(sorted[0].score).toBe(100);
+    expect(sorted[0].achieved_at < sorted[1].achieved_at).toBe(true);
+    expect(readBoard(board).entries).toHaveLength(10);
   });
 });
 

@@ -1,6 +1,14 @@
 import * as THREE from 'three';
 import { FUEL_MAX_UNITS, NIGHTS, TICKS_PER_SECOND, TUNING } from './sim/config';
 import { step } from './sim/step';
+import {
+  insertEntry,
+  isValidName,
+  LEADERBOARD_KEY,
+  readBoard,
+  type Leaderboard,
+  type LeaderboardEntry,
+} from './leaderboard';
 import type { InputState, World } from './sim/types';
 import { createWorld } from './sim/world';
 
@@ -29,28 +37,88 @@ const C = {
   text: '#F5F1E6',
 } as const;
 
+type Action =
+  | 'forward' | 'back' | 'left' | 'right'
+  | 'jump' | 'dash' | 'interact' | 'pulse' | 'pause';
+
+const DEFAULT_BINDINGS: Record<Action, string> = {
+  forward: 'KeyW',
+  back: 'KeyS',
+  left: 'KeyA',
+  right: 'KeyD',
+  jump: 'Space',
+  dash: 'ShiftLeft',
+  interact: 'KeyE',
+  pulse: 'KeyQ',
+  pause: 'Escape',
+};
+
+const KEY_OPTIONS: Array<[string, string]> = [
+  ['KeyW', 'W'], ['KeyA', 'A'], ['KeyS', 'S'], ['KeyD', 'D'],
+  ['KeyE', 'E'], ['KeyQ', 'Q'], ['KeyR', 'R'], ['KeyF', 'F'],
+  ['Space', 'Space'], ['ShiftLeft', 'Shift trái'], ['ShiftRight', 'Shift phải'],
+  ['ControlLeft', 'Ctrl trái'], ['ControlRight', 'Ctrl phải'],
+  ['ArrowUp', '↑'], ['ArrowDown', '↓'], ['ArrowLeft', '←'], ['ArrowRight', '→'],
+  ['Escape', 'Esc'], ['KeyP', 'P'], ['Enter', 'Enter'],
+];
+
+const ACTION_LABELS: Record<Action, string> = {
+  forward: 'Tiến', back: 'Lùi', left: 'Trái', right: 'Phải',
+  jump: 'Nhảy', dash: 'Lướt', interact: 'Tương tác', pulse: 'Tỏa sáng', pause: 'Tạm dừng',
+};
+
 interface Settings {
   volume: number;
   sensitivity: number;
   /** TICKET-03: high-contrast palette for colour-blind players. */
   colorblind: boolean;
+  /** TICKET-04 accessibility. */
+  bindings: Record<Action, string>;
+  reducedMotion: boolean;
+  largeText: boolean;
 }
 
 const settings: Settings = loadSettings();
 let volume = settings.volume;
 let sensitivity = settings.sensitivity;
 let colorblind = settings.colorblind;
+let bindings = settings.bindings;
+let reducedMotion = settings.reducedMotion;
+let largeText = settings.largeText;
 
 /** TICKET-03: warning UI turns white in the colour-blind palette. */
 function warningColor(): string {
   return colorblind ? C.dangerColorblind : C.danger;
 }
 
+function keyLabel(action: Action): string {
+  return KEY_OPTIONS.find(([code]) => code === bindings[action])?.[1] ?? bindings[action];
+}
+
+function applyAccessibility(): void {
+  document.documentElement.style.setProperty('--ui-scale', largeText ? '1.25' : '1');
+  document.body.classList.toggle('no-motion', reducedMotion);
+}
+
 function loadSettings(): Settings {
-  const defaults: Settings = { volume: 0.5, sensitivity: 1, colorblind: false };
+  const defaults: Settings = {
+    volume: 0.5,
+    sensitivity: 1,
+    colorblind: false,
+    bindings: { ...DEFAULT_BINDINGS },
+    reducedMotion: false,
+    largeText: false,
+  };
   try {
     const raw = localStorage.getItem('dao-den-long-settings');
-    if (raw) return { ...defaults, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<Settings>;
+      return {
+        ...defaults,
+        ...parsed,
+        bindings: { ...DEFAULT_BINDINGS, ...(parsed.bindings ?? {}) },
+      };
+    }
   } catch {
     /* ignore */
   }
@@ -61,7 +129,7 @@ function saveSettings(): void {
   try {
     localStorage.setItem(
       'dao-den-long-settings',
-      JSON.stringify({ volume, sensitivity, colorblind }),
+      JSON.stringify({ volume, sensitivity, colorblind, bindings, reducedMotion, largeText }),
     );
   } catch {
     /* ignore */
@@ -145,6 +213,17 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.querySelector('#app')!.appendChild(renderer.domElement);
+
+let rendererName = `Three.js r${THREE.REVISION}`;
+try {
+  const gl = renderer.getContext();
+  const ext = gl.getExtension('WEBGL_debug_renderer_info');
+  const gpu = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+  rendererName = `Three.js r${THREE.REVISION} / ${gpu}`;
+} catch {
+  /* renderer description is best-effort */
+}
+(window as unknown as Record<string, unknown>).__daoRenderer = rendererName;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(C.sky);
@@ -344,12 +423,23 @@ function buildLantern(): THREE.Group {
 }
 
 // ---------------------------------------------------------------- game flow
-type Phase = 'menu' | 'intro' | 'play' | 'result' | 'dawn';
+type Phase = 'menu' | 'intro' | 'play' | 'result' | 'dawn' | 'bench';
 let phase: Phase = 'menu';
 let nightChoice: 1 | 2 | 3 = 1;
 let totalScore = 0;
+const wonNights = new Set<number>();
 let world: World | null = null;
 let pausePulse = false;
+let bench: {
+  start: number;
+  warmupMs: number;
+  durationMs: number;
+  frames: number[];
+  firstFrame: boolean;
+  result: unknown;
+} | null = null;
+let shakeTicks = 0;
+let shadeAlert: { id: string; tick: number } | null = null;
 let yaw = 0;
 let dragging = false;
 const keys = new Set<string>();
@@ -357,6 +447,7 @@ const keys = new Set<string>();
 const hud = document.querySelector<HTMLDivElement>('#hud')!;
 const hint = document.querySelector<HTMLDivElement>('#hint')!;
 const overlay = document.querySelector<HTMLDivElement>('#overlay')!;
+const flash = document.querySelector<HTMLDivElement>('#flash')!;
 
 function showOverlay(html: string): void {
   overlay.innerHTML = html;
@@ -365,6 +456,62 @@ function showOverlay(html: string): void {
 function hideOverlay(): void {
   overlay.style.display = 'none';
   overlay.innerHTML = '';
+}
+
+// ---------------------------------------------------------------- leaderboard
+function storedBoard(): Leaderboard {
+  try {
+    const raw = localStorage.getItem(LEADERBOARD_KEY);
+    return raw ? readBoard(JSON.parse(raw)) : { entries: [] };
+  } catch {
+    return { entries: [] };
+  }
+}
+
+async function loadBoard(): Promise<Leaderboard> {
+  try {
+    const response = await fetch('/api/leaderboard');
+    if (response.ok) return readBoard(await response.json());
+  } catch {
+    /* static build — fall back to localStorage */
+  }
+  return storedBoard();
+}
+
+async function saveBoardEntry(entry: LeaderboardEntry): Promise<Leaderboard> {
+  try {
+    const response = await fetch('/api/leaderboard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entry }),
+    });
+    if (response.ok) return readBoard(await response.json());
+  } catch {
+    /* static build — fall back to localStorage */
+  }
+  const board = { entries: insertEntry(storedBoard().entries, entry) };
+  try {
+    localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(board));
+  } catch {
+    /* storage unavailable */
+  }
+  return board;
+}
+
+function boardRows(board: Leaderboard): string {
+  if (board.entries.length === 0) return '<p class="small">Chưa có điểm nào.</p>';
+  return `<ol class="board">${board.entries
+    .map(
+      (e) =>
+        `<li><b>${e.name}</b> — ${e.score} điểm · ${e.nights_won}/3 đêm · ${new Date(e.achieved_at).toLocaleDateString('vi-VN')}</li>`,
+    )
+    .join('')}</ol>`;
+}
+
+async function leaderboardPanel(): Promise<void> {
+  const board = await loadBoard();
+  showOverlay(`<div class="panel"><h2>Bảng xếp hạng</h2>${boardRows(board)}<button data-action="back">Quay lại</button></div>`);
+  overlay.querySelector<HTMLButtonElement>('[data-action="back"]')!.onclick = menu;
 }
 
 function menu(): void {
@@ -381,7 +528,8 @@ function menu(): void {
           .join('')}
       </div>
       <button data-action="settings">Cài đặt</button>
-      <p class="small">WASD di chuyển · Space nhảy · Shift lướt · E nạp đèn · Q tỏa sáng · Esc tạm dừng</p>
+      <button data-action="leaderboard">Bảng xếp hạng</button>
+      <p class="small">${controlHint()}</p>
     </div>`);
   overlay.querySelectorAll<HTMLButtonElement>('[data-night]').forEach((button) => {
     button.onclick = () => {
@@ -390,20 +538,44 @@ function menu(): void {
     };
   });
   overlay.querySelector<HTMLButtonElement>('[data-action="settings"]')!.onclick = settingsPanel;
+  overlay.querySelector<HTMLButtonElement>('[data-action="leaderboard"]')!.onclick = () => {
+    void leaderboardPanel();
+  };
 }
 
 function settingsPanel(): void {
+  const actions = Object.keys(ACTION_LABELS) as Action[];
+  const keyRows = actions
+    .map(
+      (action) => `<label class="keyline">${ACTION_LABELS[action]}
+        <select data-key="${action}">
+          ${KEY_OPTIONS.map(
+            ([code, label]) =>
+              `<option value="${code}" ${bindings[action] === code ? 'selected' : ''}>${label}</option>`,
+          ).join('')}
+        </select></label>`,
+    )
+    .join('');
   showOverlay(`
-    <div class="panel">
+    <div class="panel wide">
       <h2>Cài đặt</h2>
       <label>Âm lượng <input id="vol" type="range" min="0" max="1" step="0.05" value="${volume}"></label>
       <label>Độ nhạy chuột <input id="sens" type="range" min="0.2" max="3" step="0.1" value="${sensitivity}"></label>
       <label><input id="cb" type="checkbox" ${colorblind ? 'checked' : ''}> Bảng màu dễ phân biệt</label>
+      <label><input id="motion" type="checkbox" ${reducedMotion ? 'checked' : ''}> Giảm chuyển động (tắt rung/chớp)</label>
+      <label><input id="big" type="checkbox" ${largeText ? 'checked' : ''}> Chữ lớn (×1.25)</label>
+      <h3>Đổi phím</h3>
+      <div class="keygrid">${keyRows}</div>
+      <p id="key-error" class="error" aria-live="polite"></p>
+      <button data-action="reset-keys">Khôi phục mặc định</button>
       <button data-action="back">Quay lại</button>
     </div>`);
   const vol = overlay.querySelector<HTMLInputElement>('#vol')!;
   const sens = overlay.querySelector<HTMLInputElement>('#sens')!;
   const cb = overlay.querySelector<HTMLInputElement>('#cb')!;
+  const motion = overlay.querySelector<HTMLInputElement>('#motion')!;
+  const big = overlay.querySelector<HTMLInputElement>('#big')!;
+  const error = overlay.querySelector<HTMLParagraphElement>('#key-error')!;
   vol.oninput = () => {
     volume = Number(vol.value);
     saveSettings();
@@ -416,7 +588,42 @@ function settingsPanel(): void {
     colorblind = cb.checked;
     saveSettings();
   };
+  motion.onchange = () => {
+    reducedMotion = motion.checked;
+    applyAccessibility();
+    saveSettings();
+  };
+  big.onchange = () => {
+    largeText = big.checked;
+    applyAccessibility();
+    saveSettings();
+  };
+  overlay.querySelectorAll<HTMLSelectElement>('select[data-key]').forEach((select) => {
+    select.onchange = () => {
+      const action = select.dataset.key as Action;
+      const code = select.value;
+      const clash = actions.find((other) => other !== action && bindings[other] === code);
+      if (clash) {
+        select.value = bindings[action];
+        error.textContent = `Phím ${code} đang dùng cho "${ACTION_LABELS[clash]}". Chọn phím khác.`;
+        return;
+      }
+      error.textContent = '';
+      bindings[action] = code;
+      saveSettings();
+      hint.textContent = controlHint();
+    };
+  });
+  overlay.querySelector<HTMLButtonElement>('[data-action="reset-keys"]')!.onclick = () => {
+    bindings = { ...DEFAULT_BINDINGS };
+    saveSettings();
+    settingsPanel();
+  };
   overlay.querySelector<HTMLButtonElement>('[data-action="back"]')!.onclick = menu;
+}
+
+function controlHint(): string {
+  return `${keyLabel('forward')}${keyLabel('left')}${keyLabel('back')}${keyLabel('right')} di chuyển · ${keyLabel('jump')} nhảy · ${keyLabel('dash')} lướt · ${keyLabel('interact')} nạp đèn · ${keyLabel('pulse')} tỏa sáng · ${keyLabel('pause')} tạm dừng`;
 }
 
 function intro(): void {
@@ -450,11 +657,13 @@ function startNight(night: 1 | 2 | 3): void {
 function result(): void {
   if (!world) return;
   stopMusic();
-  phase = world.state === 'won' ? (world.night === 3 ? 'dawn' : 'result') : 'result';
-  const won = world.state === 'won';
-  const title = won ? `Đêm ${world.night} sáng rồi` : `Đêm ${world.night} chưa xong`;
+  const finished = world;
+  const won = finished.state === 'won';
+  if (won) wonNights.add(finished.night);
+  phase = won ? (finished.night === 3 ? 'dawn' : 'result') : 'result';
+  const title = won ? `Đêm ${finished.night} sáng rồi` : `Đêm ${finished.night} chưa xong`;
   const text = won
-    ? `Điểm đêm này: ${world.score} · Tổng: ${world.totalScore}`
+    ? `Điểm đêm này: ${finished.score} · Tổng: ${finished.totalScore}`
     : 'Ngọn lửa tắt, hoặc trời đã sáng. Thử lại đêm này nhé.';
   const buttons =
     phase === 'dawn'
@@ -462,13 +671,48 @@ function result(): void {
       : won
         ? `<button data-action="next">Đêm tiếp theo</button><button data-action="replay">Chơi lại</button>`
         : `<button data-action="replay">Chơi lại đêm này</button><button data-action="menu">Về menu</button>`;
-  showOverlay(`<div class="panel"><h1>${phase === 'dawn' ? 'Bình Minh' : title}</h1><p>${text}</p>${buttons}</div>`);
+  showOverlay(`
+    <div class="panel">
+      <h1>${phase === 'dawn' ? 'Bình Minh' : title}</h1>
+      <p>${text}</p>
+      <div class="score-form">
+        <label for="player-name">Tên (3–12 ký tự)</label>
+        <input id="player-name" maxlength="12" placeholder="TenCuaBan" autocomplete="off">
+        <button data-action="save-score">Lưu điểm</button>
+        <button data-action="board">Bảng xếp hạng</button>
+        <p id="score-error" class="error" aria-live="polite"></p>
+      </div>
+      ${buttons}
+    </div>`);
+  const nameInput = overlay.querySelector<HTMLInputElement>('#player-name')!;
+  const scoreError = overlay.querySelector<HTMLParagraphElement>('#score-error')!;
+  overlay.querySelector<HTMLButtonElement>('[data-action="save-score"]')!.onclick = () => {
+    const name = nameInput.value.trim();
+    if (!isValidName(name)) {
+      scoreError.textContent = 'Tên phải có 3–12 ký tự chữ/số/gạch dưới.';
+      return;
+    }
+    const entry: LeaderboardEntry = {
+      name,
+      score: finished.totalScore,
+      nights_won: wonNights.size,
+      achieved_at: new Date().toISOString(),
+      seed: 7,
+    };
+    void saveBoardEntry(entry).then(() => {
+      scoreError.textContent = '';
+      void leaderboardPanel();
+    });
+  };
+  overlay.querySelector<HTMLButtonElement>('[data-action="board"]')!.onclick = () => {
+    void leaderboardPanel();
+  };
   overlay.querySelector<HTMLButtonElement>('[data-action="next"]')?.addEventListener('click', () => {
-    nightChoice = Math.min(3, world!.night + 1) as 1 | 2 | 3;
+    nightChoice = Math.min(3, finished.night + 1) as 1 | 2 | 3;
     intro();
   });
   overlay.querySelector<HTMLButtonElement>('[data-action="replay"]')?.addEventListener('click', () => {
-    startNight(world!.night);
+    startNight(finished.night);
   });
   overlay.querySelector<HTMLButtonElement>('[data-action="menu"]')?.addEventListener('click', menu);
 }
@@ -493,8 +737,8 @@ function pausePanel(): void {
 }
 
 function readInput(): InputState {
-  const forward = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
-  const strafe = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+  const forward = (keys.has(bindings.forward) ? 1 : 0) - (keys.has(bindings.back) ? 1 : 0);
+  const strafe = (keys.has(bindings.right) ? 1 : 0) - (keys.has(bindings.left) ? 1 : 0);
   const fx = -Math.sin(yaw);
   const fz = -Math.cos(yaw);
   const rx = Math.cos(yaw);
@@ -508,15 +752,15 @@ function readInput(): InputState {
   }
   const cos = Math.cos(yaw);
   const sin = Math.sin(yaw);
-  const pause = pausePulse || keys.has('Escape') || keys.has('KeyP');
+  const pause = pausePulse || keys.has(bindings.pause);
   pausePulse = false;
   return {
     move: [wx * cos - wz * sin, wx * sin + wz * cos],
     camYawDeg: (yaw * 180) / Math.PI,
-    jump: keys.has('Space'),
-    interact: keys.has('KeyE'),
-    pulse: keys.has('KeyQ'),
-    dash: keys.has('ShiftLeft') || keys.has('ShiftRight'),
+    jump: keys.has(bindings.jump),
+    interact: keys.has(bindings.interact),
+    pulse: keys.has(bindings.pulse),
+    dash: keys.has(bindings.dash),
     pause,
   };
 }
@@ -534,7 +778,9 @@ function syncScene(w: World): void {
   // visibly darkens the island.
   const totalFuel = w.lanterns.reduce((sum, l) => sum + (l.lit ? l.fuel / FUEL_MAX_UNITS : 0), 0);
   ambient.intensity = 0.15 + 0.55 * (totalFuel / w.lanterns.length);
-  const lowPulse = Math.floor(w.tick / 30) % 2 === 0; // 1 Hz blink
+  // TICKET-04: reduced motion also turns off the low-fuel blink; the white
+  // (or colour-blind) bar and the ⚠ subtitle still carry the warning.
+  const lowPulse = reducedMotion ? true : Math.floor(w.tick / 30) % 2 === 0; // 1 Hz blink
 
   for (const lantern of w.lanterns) {
     let group = meshCache.lanterns.get(lantern.id);
@@ -661,8 +907,21 @@ function updateHud(w: World): void {
   const warn = colorblind ? '⚠ ' : '';
   const nearestText = near
     ? nearest.l.lit
-      ? `E — Châm dầu (${p.carried} mang, đèn ${(nearest.l.fuel / FUEL_MAX_UNITS * 100).toFixed(0)}%)`
-      : `E — ${nearest.l.ever_lit ? 'Thắp lại' : 'Thắp đèn'} (${p.carried}/${nearest.l.ever_lit ? TUNING.relight_cost : TUNING.lantern_cost})`
+      ? `${keyLabel('interact')} — Châm dầu (${p.carried} mang, đèn ${(nearest.l.fuel / FUEL_MAX_UNITS * 100).toFixed(0)}%)`
+      : `${keyLabel('interact')} — ${nearest.l.ever_lit ? 'Thắp lại' : 'Thắp đèn'} (${p.carried}/${nearest.l.ever_lit ? TUNING.relight_cost : TUNING.lantern_cost})`
+    : '';
+  let subtitle = '';
+  if (shadeAlert && w.tick - shadeAlert.tick <= 180) {
+    subtitle = `${warn}Bóng Mực xuất hiện!`;
+  } else if (w.wind.warning) {
+    subtitle = `${warn}Gió sắp thổi!`;
+  } else if (w.lanterns.some((l) => l.lit && l.fuel < TUNING.low_fuel_threshold * 60)) {
+    subtitle = `${warn}Đèn sắp hết dầu!`;
+  } else if (w.timeLeft <= 10) {
+    subtitle = `${warn}10 giây cuối!`;
+  }
+  const edgeArrow = shadeAlert && w.tick - shadeAlert.tick <= 180
+    ? shadeArrow(w, shadeAlert.id)
     : '';
   hud.innerHTML = `
     <div class="top">
@@ -675,11 +934,45 @@ function updateHud(w: World): void {
       <div class="cooldowns">Lướt ${(p.dashCd / 60).toFixed(1)}s · Tỏa sáng ${(p.pulseCd / 60).toFixed(1)}s</div>
     </div>
     ${near ? `<div class="prompt">${nearestText}</div>` : ''}
-    ${nearest && nearest.d > TUNING.interact_radius ? `<div class="arrow">➤ Đèn nhận dầu gần nhất ${nearest.d.toFixed(0)}m</div>` : ''}`;
-  hint.textContent = 'WASD di chuyển · Space nhảy · Shift lướt · E nạp đèn · Q tỏa sáng · Esc tạm dừng';
+    ${nearest && nearest.d > TUNING.interact_radius ? `<div class="arrow">➤ Đèn nhận dầu gần nhất ${nearest.d.toFixed(0)}m</div>` : ''}
+    ${subtitle ? `<div class="subtitle" style="color:${warningColor()}">${subtitle}</div>` : ''}
+    ${edgeArrow}`;
+  hint.textContent = controlHint();
+}
+
+/** TICKET-04: point at the shade that just spawned, clamped to the screen edge. */
+function shadeArrow(w: World, id: string): string {
+  const shade = w.shades.find((s) => s.id === id);
+  if (!shade) return '';
+  const ndc = new THREE.Vector3(shade.pos[0], shade.pos[1] + 1, shade.pos[2]).project(camera);
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  let dx = (ndc.x * 0.5 + 0.5) * width - width / 2;
+  let dy = (-ndc.y * 0.5 + 0.5) * height - height / 2;
+  if (ndc.z > 1) {
+    dx = -dx;
+    dy = -dy;
+  }
+  const scale = Math.min(
+    (width / 2 - 50) / Math.max(1, Math.abs(dx)),
+    (height / 2 - 50) / Math.max(1, Math.abs(dy)),
+    1,
+  );
+  const x = width / 2 + dx * scale;
+  const y = height / 2 + dy * scale;
+  const rotation = (Math.atan2(dy, dx) * 180) / Math.PI;
+  return `<div class="edge-arrow" style="left:${x}px;top:${y}px;transform:translate(-50%,-50%) rotate(${rotation}deg);color:${warningColor()}">➤</div>`;
 }
 
 function updateCamera(w: World): void {
+  if (bench) {
+    // TICKET-04: fixed bench orbit — radius 30 m, height 15 m, 15 s per turn,
+    // starting at (30, 15, 0) and turning counter-clockwise from above.
+    const theta = ((performance.now() - bench.start) / 15000) * Math.PI * 2;
+    camera.position.set(30 * Math.cos(theta), 15, -30 * Math.sin(theta));
+    camera.lookAt(0, 0, 0);
+    return;
+  }
   const distance = 9;
   const height = 5;
   camera.position.set(
@@ -687,13 +980,18 @@ function updateCamera(w: World): void {
     w.player.pos[1] + height,
     w.player.pos[2] + Math.cos(yaw) * distance,
   );
+  if (shakeTicks > 0 && !reducedMotion) {
+    const amount = 0.14 * (shakeTicks / 12);
+    camera.position.x += Math.sin(w.tick * 2.1) * amount;
+    camera.position.y += Math.cos(w.tick * 2.7) * amount;
+  }
   camera.lookAt(w.player.pos[0], w.player.pos[1] + 1.4, w.player.pos[2]);
 }
 
 // ---------------------------------------------------------------- listeners
 window.addEventListener('keydown', (event) => {
   keys.add(event.code);
-  if ((event.code === 'Escape' || event.code === 'KeyP') && phase === 'play') {
+  if (event.code === bindings.pause && phase === 'play') {
     event.preventDefault();
   }
 });
@@ -713,6 +1011,85 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+// ---------------------------------------------------------------- bench scene
+function startBench(options: { seed: number; duration: number }): void {
+  const shades = Array.from({ length: 200 }, (_, i) => {
+    const angle = (i * Math.PI * 2) / 200;
+    const radius = 15 + (i % 7) * 3;
+    return {
+      id: `B${i + 1}`,
+      pos: [Math.cos(angle) * radius, 0, Math.sin(angle) * radius] as [number, number, number],
+      state: 'wander' as const,
+    };
+  });
+  const motes = Array.from({ length: 100 }, (_, i) => {
+    const angle = (i * Math.PI * 2) / 100;
+    const radius = 20 + (i % 5) * 4;
+    return [Math.cos(angle) * radius, 0, Math.sin(angle) * radius] as [number, number, number];
+  });
+  world = createWorld({
+    seed: options.seed,
+    night: 1,
+    scenario: {
+      player: { pos: [0, 0, 0], flames: 999, invuln_ticks: 999999 },
+      random_motes: false,
+      random_shades: false,
+      random_drifters: false,
+      wind_enabled: false,
+      motes,
+      shades,
+      lanterns: [{ id: 'L1', lit: true }, { id: 'L2', lit: true }, { id: 'L3', lit: true }],
+      time_left_s: 600,
+    },
+  });
+  phase = 'bench';
+  bench = {
+    start: performance.now(),
+    warmupMs: 3000,
+    durationMs: options.duration * 1000,
+    frames: [],
+    firstFrame: false,
+    result: null,
+  };
+  (window as unknown as Record<string, unknown>).__daoBenchFirstFrame = false;
+  (window as unknown as Record<string, unknown>).__daoBenchResult = null;
+  hideOverlay();
+  stopMusic();
+}
+
+const idleInput: InputState = {
+  move: [0, 0],
+  camYawDeg: 0,
+  jump: false,
+  interact: false,
+  pulse: false,
+  dash: false,
+  pause: false,
+};
+
+function finishBench(now: number): void {
+  if (!bench) return;
+  const frames = bench.frames;
+  const n = frames.length;
+  const sum = frames.reduce((a, b) => a + b, 0) || 1;
+  const k = Math.max(1, Math.ceil(0.01 * n));
+  const slowest = [...frames].sort((a, b) => b - a).slice(0, k);
+  const sorted = [...frames].sort((a, b) => a - b);
+  const round = (value: number) => Math.round(value * 10) / 10;
+  bench.result = {
+    avg_fps: round((1000 * n) / sum),
+    p1_low_fps: round(1000 / (slowest.reduce((a, b) => a + b, 0) / k)),
+    frame_ms_p95: round(sorted[Math.min(n - 1, Math.ceil(0.95 * n) - 1)] ?? 0),
+    frames: n,
+    load_ms: now - bench.start,
+    peak_mem_mb: null,
+    vsync_off: true,
+    renderer: rendererName,
+    os: 'browser',
+  };
+  (window as unknown as Record<string, unknown>).__daoBenchResult = bench.result;
+}
+
 // ---------------------------------------------------------------- main loop
 let last = performance.now();
 let accumulator = 0;
@@ -721,10 +1098,53 @@ let fpsFrames = 0;
 let fpsElapsed = 0;
 let prevJump = false;
 let prevCountdown = 11;
+let lastBenchFrame = 0;
 
 function frame(now: number): void {
-  const delta = Math.min((now - last) / 1000, 0.25);
+  const rawFrameMs = now - last;
+  const delta = Math.min(rawFrameMs / 1000, 0.25);
   last = now;
+
+  if (phase === 'bench' && world && bench) {
+    if (!bench.firstFrame) {
+      bench.firstFrame = true;
+      (window as unknown as Record<string, unknown>).__daoBenchFirstFrame = true;
+    }
+    const elapsed = now - bench.start;
+    if (elapsed > bench.warmupMs && lastBenchFrame > 0 && bench.result === null) {
+      bench.frames.push(rawFrameMs);
+    }
+    lastBenchFrame = now;
+    step(world, idleInput);
+    // TICKET-04: benchmark freezes gameplay — no spawns, damage, pickups,
+    // fuel decay or end conditions, but shades keep their normal wander.
+    world.player.flames = 999;
+    world.player.invuln = 999999;
+    world.player.carried = 0;
+    world.player.pos = [0, 0, 0];
+    world.timeLeft = 600;
+    world.state = 'playing';
+    world.paused = false;
+    for (const lantern of world.lanterns) {
+      if (lantern.lit) lantern.fuel = FUEL_MAX_UNITS;
+    }
+    for (const shade of world.shades) {
+      if (shade.state !== 'wander') {
+        shade.state = 'wander';
+        shade.stateTicksLeft = 0;
+        shade.targetLanternId = undefined;
+      }
+    }
+    syncScene(world);
+    updateCamera(world);
+    renderer.render(scene, camera);
+    if (elapsed >= bench.warmupMs + bench.durationMs && bench.result === null) {
+      finishBench(now);
+    }
+    requestAnimationFrame(frame);
+    return;
+  }
+
   if (phase === 'play' && world && !world.paused) {
     fpsFrames += 1;
     fpsElapsed += delta;
@@ -754,7 +1174,16 @@ function frame(now: number): void {
       for (const event of events) {
         const frequency = soundFor[event.name];
         if (frequency) beep(frequency, event.name === 'game_over' ? 0.4 : 0.1);
+        if (event.name === 'shade_spawned') {
+          shadeAlert = { id: String(event.data.id), tick: event.tick };
+        }
+        if (event.name === 'player_hit' && !reducedMotion) {
+          shakeTicks = 12;
+          flash.classList.add('on');
+          window.setTimeout(() => flash.classList.remove('on'), 90);
+        }
       }
+      if (shakeTicks > 0) shakeTicks -= 1;
       accumulator -= tickDuration;
       steps += 1;
     }
@@ -781,9 +1210,12 @@ function frame(now: number): void {
   requestAnimationFrame(frame);
 }
 
-// Hooks for the optional FPS benchmark (scripts/fps.mjs); harmless in normal play.
-(window as unknown as Record<string, unknown>).__daoStartNight = startNight;
-(window as unknown as Record<string, unknown>).__daoPhase = () => phase;
+// Hooks for the FPS and Phase 4 benchmark scripts; harmless in normal play.
+const globals = window as unknown as Record<string, unknown>;
+globals.__daoStartNight = startNight;
+globals.__daoPhase = () => phase;
+globals.__daoStartBench = startBench;
 
+applyAccessibility();
 menu();
 requestAnimationFrame(frame);

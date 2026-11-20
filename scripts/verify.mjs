@@ -1,18 +1,18 @@
 /**
- * Verification for Test Contract v1.2 (TICKET-03, "Đèn cạn dầu").
+ * Verification for Test Contract v1.3 (TICKET-04, release v1.0.0).
  *
- *   npm run verify [-- phase-3]
+ *   npm run verify [-- phase-4]
  *
  * Unit tests + typecheck + headless build + determinism + per-feature scenario
  * evidence + exit codes + full-night performance. Evidence goes to docs/proof/<phase>/.
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const root = process.cwd();
-const phase = process.argv[2] ?? 'phase-3';
+const phase = process.argv[2] ?? 'phase-4';
 const proofDir = join(root, 'docs', 'proof', phase);
 const tmpDir = join(root, '.tmp');
 mkdirSync(proofDir, { recursive: true });
@@ -61,6 +61,8 @@ log.push('## Unit tests\n\n```\n' + testOutput.trim() + '\n```');
 run('npm', ['run', 'typecheck']);
 check('Type check', 'npm run typecheck', true);
 run('npm', ['run', 'build:headless']);
+// Phase 4 tooling imports dist/sim.mjs (leaderboard export, soak, bench).
+run('npm', ['run', 'build:sim']);
 
 // 2. Deterministic full-feature replay
 const base = [
@@ -95,7 +97,7 @@ writeFileSync(
 check('Determinism', 'two runs, equal sha256', hashA === hashB, hashA);
 log.push(`## Determinism\n\n- sha256 (both runs): \`${hashA}\`\n- identical: **${hashA === hashB}**`);
 
-// 2b. Phase 1 regression — the standard numbers still hold under v1.2.
+// 2b. Phase 1 regression — the standard numbers still hold under v1.3.
 const regressionArgs = [
   '--seed',
   '7',
@@ -308,6 +310,83 @@ check('Missing file exit 1', 'spawnSync', missing.status === 1);
 const badNight = spawnSync('node', ['dist/headless.mjs', '--seed', '1', '--night', '9', '--ticks', '10', '--out', '.tmp/night.jsonl'], { cwd: root, shell: process.platform === 'win32', encoding: 'utf8' });
 check('Invalid --night exit 1', 'spawnSync', badNight.status === 1);
 
+// 7b. TICKET-04 (contract v1.3): release-only evidence. Benchmark and FPS
+// scripts are run separately so verify stays browser-free; their recorded
+// outputs are validated here instead of being fabricated.
+if (phase === 'phase-4') {
+  const contract = JSON.parse(readFileSync(join(root, 'game.contract.json'), 'utf8'));
+  check('Contract v1.3 commands', 'game.contract.json', contract.contract_version === '1.3' &&
+    contract.bench_cmd === 'node scripts/bench.mjs' &&
+    contract.soak_cmd === 'node scripts/soak.mjs' &&
+    contract.run_cmd === 'node scripts/run.mjs' &&
+    existsSync(join(root, 'scripts', 'bench.mjs')) &&
+    existsSync(join(root, 'scripts', 'soak.mjs')));
+
+  const benchPath = join(root, 'bench.json');
+  if (existsSync(benchPath)) {
+    const bench = JSON.parse(readFileSync(benchPath, 'utf8'));
+    writeFileSync(join(proofDir, 'bench.json'), readFileSync(benchPath), 'utf8');
+    const numbers = ['avg_fps', 'p1_low_fps', 'frame_ms_p95', 'frames', 'load_ms'];
+    check('Bench schema', 'bench.json from bench_cmd', bench.contract_version === '1.3' &&
+      numbers.every((key) => Number.isFinite(bench[key])) &&
+      bench.frames > 0 && typeof bench.vsync_off === 'boolean' &&
+      typeof bench.renderer === 'string' && typeof bench.os === 'string');
+    check('Bench thresholds (reference machine)', 'avg ≥ 60, p1 ≥ 30, load ≤ 10000 ms',
+      bench.avg_fps >= 60 && bench.p1_low_fps >= 30 && bench.load_ms <= 10000,
+      `${bench.avg_fps} / ${bench.p1_low_fps} / ${bench.load_ms} ms`);
+    check('Bench peak_mem explained', 'web build records null plus README note',
+      bench.peak_mem_mb === null && readFileSync(join(root, 'README.md'), 'utf8').includes('peak_mem_mb'));
+    log.push(`## Benchmark\n\n- avg ${bench.avg_fps} FPS · p1 ${bench.p1_low_fps} FPS · p95 ${bench.frame_ms_p95} ms · ${bench.frames} frames · load ${bench.load_ms} ms.\n- Renderer: ${bench.renderer}\n- OS: ${bench.os}\n- peak_mem_mb = null (web build; CDP exposes JS heap, not process RSS — explained in README).`);
+  } else {
+    check('Bench evidence committed', 'bench.json at repo root', false, 'chưa có bench.json');
+  }
+
+  const soakPath = join(root, 'soak.json');
+  if (existsSync(soakPath)) {
+    const soak = JSON.parse(readFileSync(soakPath, 'utf8'));
+    writeFileSync(join(proofDir, 'soak.json'), readFileSync(soakPath), 'utf8');
+    check('Soak schema', 'soak.json from soak_cmd', soak.nights === 10 &&
+      soak.crashes === 0 && Array.isArray(soak.results) && soak.results.length === 10 &&
+      soak.results.every((r) => r === 'won' || r === 'lost') &&
+      Number.isFinite(soak.duration_s));
+    check('Soak memory ≤ 1.2×', 'RSS start vs end',
+      soak.mem_end_mb <= 1.2 * soak.mem_start_mb,
+      `${soak.mem_start_mb} → ${soak.mem_end_mb} MB`);
+    log.push(`## Soak\n\n- ${soak.nights} nights, ${soak.crashes} crashes, results: ${soak.results.join(', ')}.\n- RSS ${soak.mem_start_mb} → ${soak.mem_end_mb} MB (limit ${(1.2 * soak.mem_start_mb).toFixed(1)} MB), ${soak.duration_s} s.`);
+  } else {
+    check('Soak evidence committed', 'soak.json at repo root', false, 'chưa có soak.json');
+  }
+
+  const exportOut = join(tmpDir, 'leaderboard-export.json');
+  run('node', ['scripts/run.mjs', '--export-leaderboard', '.tmp/leaderboard-export.json']);
+  const exported = JSON.parse(readFileSync(exportOut, 'utf8'));
+  writeFileSync(join(proofDir, 'leaderboard-export.json'), readFileSync(exportOut), 'utf8');
+  check('Leaderboard export', 'run_cmd --export-leaderboard', Array.isArray(exported.entries) &&
+    exported.entries.length <= 10);
+
+  const requiredFiles = ['CREDITS.md', 'LICENSE', 'CHANGELOG.md', 'README.md',
+    'docs/requirements/phase-4.md', 'docs/notes/retro.md', 'docs/demo/demo.mp4'];
+  const missingFiles = requiredFiles.filter((file) => !existsSync(join(root, file)));
+  check('Packaging files', 'README/CREDITS/LICENSE/retro/ticket/demo', missingFiles.length === 0,
+    missingFiles.join(', '));
+  if (existsSync(join(root, 'docs', 'demo', 'demo.mp4'))) {
+    const sizeMb = statSync(join(root, 'docs', 'demo', 'demo.mp4')).size / 1048576;
+    check('Demo under 100 MB', 'docs/demo/demo.mp4', sizeMb < 100, `${sizeMb.toFixed(1)} MB`);
+  }
+
+  const readme = readFileSync(join(root, 'README.md'), 'utf8');
+  const mainTs = readFileSync(join(root, 'src', 'main.ts'), 'utf8');
+  const indexHtml = readFileSync(join(root, 'index.html'), 'utf8');
+  const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  check('Accessibility hooks', 'rebinding / subtitles / reduced motion / font scale',
+    mainTs.includes('DEFAULT_BINDINGS') && mainTs.includes('subtitle') &&
+    mainTs.includes('reducedMotion') && indexHtml.includes('--ui-scale') &&
+    indexHtml.includes('id="flash"'));
+  check('Clean-clone commands', 'README documents ≤ 3 commands',
+    readme.includes('npm ci') && readme.includes('npm run build') &&
+    Boolean(packageJson.scripts.bench) && Boolean(packageJson.scripts.soak));
+}
+
 // 8. Evidence summary
 const table = [
   '| Requirement | How checked | Result |',
@@ -316,7 +395,7 @@ const table = [
 ].join('\n');
 writeFileSync(
   join(proofDir, 'summary.md'),
-  `# Evidence ${phase} — Test Contract v1.2\n\nGenerated on ${new Date().toISOString()}.\n\n${table}\n\n${log.join('\n\n')}\n`,
+  `# Evidence ${phase} — Test Contract v1.3\n\nGenerated on ${new Date().toISOString()}.\n\n${table}\n\n${log.join('\n\n')}\n`,
   'utf8',
 );
 

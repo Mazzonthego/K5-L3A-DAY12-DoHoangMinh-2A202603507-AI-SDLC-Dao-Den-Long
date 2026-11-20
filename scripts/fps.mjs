@@ -2,7 +2,7 @@
  * Optional GUI benchmark — measures the real requestAnimationFrame rate of the
  * game at 1280×720 and writes docs/proof/<phase>/fps.txt.
  *
- *   npm run fps -- phase-3
+ *   npm run fps -- phase-4
  *
  * It starts Vite, launches headless Chromium/Edge with remote debugging, asks
  * the page to start night 1 through the __daoStartNight hook, then reads the
@@ -15,7 +15,8 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const root = process.cwd();
-const proofDir = join(root, 'docs', 'proof', process.argv[2] ?? 'phase-3');
+const phase = process.argv[2] ?? 'phase-4';
+const proofDir = join(root, 'docs', 'proof', phase);
 const tmpDir = join(root, '.tmp');
 mkdirSync(proofDir, { recursive: true });
 mkdirSync(tmpDir, { recursive: true });
@@ -201,7 +202,7 @@ async function main() {
         `- FPS trung bình: **${sample.avg}**`,
         `- Kết quả: **${passed ? 'đạt' : 'chưa đạt'}** (ngưỡng ≥ 30)`,
         '',
-        'Đo bằng `npm run fps` (Vite + headless Edge/Chrome, requestAnimationFrame thật).',
+        `Đo bằng \`npm run fps -- ${phase}\` (Vite + headless Edge/Chrome, requestAnimationFrame thật).`,
         '',
       ].join('\n'),
       'utf8',
