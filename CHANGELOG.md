@@ -30,3 +30,22 @@
 - `npm run verify`: 37 check gồm regression Phase 1 (số chuẩn), một scenario headless cho mỗi tính năng mới, exit codes, 21600 tick ≤ 30 s; bằng chứng tại `docs/proof/phase-2/`.
 - `npm run fps`: đo `requestAnimationFrame` thật ở 1280×720 — 60 FPS (ngưỡng 30).
 - Spec acceptance criteria cho Phần 3 tại `docs/requirements/phase-2-part3-acceptance.md`.
+
+### Phase 3 — «Đèn cạn dầu» (tag `phase-3`, contract v1.2)
+
+**Breaking changes (luật bị thay thế):**
+
+- `contract_version`: `1.1` → `1.2`. Thời lượng Đêm 1/2/3: `300/330/360` → `240/270/300` s.
+- **Bỏ thắng sớm** «thắp hết đèn». Thắng chỉ ở bình minh khi số đèn đang sáng `≥ ceil(0.6 × tổng đèn)`; `game_over.reason` dùng `dawn_survived`, `all_lit` không còn. Thua: `no_flames` (ưu tiên, kể cả tick cuối) hoặc `dawn`.
+- **Đèn sáng nhận thêm đom đóm** (trước đây bị cấm): châm `ceil((100 − fuel)/10)` con, mỗi con +10 dầu; đèn có `fuel ≤ 0` tắt (`lantern_out`), thắp lại chỉ cần 5 đom đóm. `deposited` reset khi tắt; lưu `ever_lit` / `relit_count`.
+- **Vùng an toàn không còn vĩnh viễn**: `fuel < 30` mất vùng an toàn; Bóng Mực `wander` tìm đèn yếu và chuyển sang trạng thái mới `drain` (hút 5 dầu/giây, cộng dồn). Sau `stunned` bóng về `wander` thay vì `chase`.
+- **Sức chứa** `10` → `min(20, 10 + 2 × successful_lights)`; scenario không được tính `successful_lights`.
+- **Toàn bộ công thức điểm cũ bị thay**: +5/đom đóm nạp, +100 thắp, +40 thắp lại, +5/15 choáng bóng, `50 + floor(fuel)` mỗi đèn lúc bình minh, +50/lửa; bỏ thưởng thời gian.
+- Snapshot thêm `lanterns[].fuel` (1 chữ số), `ever_lit`, `relit_count`, `player.capacity`, `shades[].target_lantern_id`; scenario thêm `lanterns[].fuel/ever_lit/relit_count`, `player.successful_lights`, `shades[].target_lantern_id`. Sự kiện mới: `refuel`, `lantern_out`, `fuel_drain`; `lantern_lit` thêm `relight`.
+
+**Tính năng / tài liệu:**
+
+- GUI: thanh dầu trên đèn, nhấp nháy 1 Hz khi `fuel < 30`, HUD `đang mang/sức chứa`, đèn tắt xẹp 20% + giấy rách, ánh sáng môi trường giảm theo tổng dầu.
+- Cài đặt «Bảng màu dễ phân biệt» (lưu localStorage): viền/mắt Bóng Mực `#00B3FF`, cảnh báo UI trắng kèm ⚠.
+- ADR `docs/notes/adr-001-lantern-state-and-win.md`; lý do sửa test cũ trong `docs/notes/decisions.md`.
+- 7 fixture headless mới cho từng luật; `npm run verify -- phase-3`: 50 check đạt, 40 unit test, regression Phase 1–2, FPS 60 @ 1280×720; bằng chứng `docs/proof/phase-3/`.

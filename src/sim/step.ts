@@ -1,13 +1,21 @@
-import { TICKS_PER_SECOND, TUNING } from './config';
+import {
+  FUEL_MAX_UNITS,
+  FUEL_UNITS_PER_POINT,
+  LOW_FUEL_UNITS,
+  TICKS_PER_SECOND,
+  TUNING,
+} from './config';
 import { dist3, distXZ, groundHeight, insideTower, nearestLanternIndex } from './geometry';
-import type { GameEvent, InputState, Shade, Vec3, World } from './types';
+import type { GameEvent, InputState, Lantern, Shade, Vec3, World } from './types';
 
 const DT = 1 / TICKS_PER_SECOND;
 
 /**
- * Advance the world by one wall-clock tick. Contract v1.1 order:
- * input/pause → timers → move player/fall → pickups → lantern → safe zones →
- * pulse → shade/drifter movement → contacts → spawns → win/lose.
+ * Advance the world by one wall-clock tick. Contract v1.2 order (TICKET-03):
+ * input/pause → timers (incl. fuel decay + drain, then lantern_out) →
+ * move player/fall → pickups → lantern → safe zones → pulse →
+ * shade/drifter movement → contacts → spawns → win/lose.
+ * Win/lose is evaluated after every update, including the dawn tick.
  */
 export function step(world: World, input: InputState): GameEvent[] {
   const events: GameEvent[] = [];
@@ -43,6 +51,47 @@ export function step(world: World, input: InputState): GameEvent[] {
   // 2. Timers
   world.simTick += 1;
   world.timeLeft = Math.max(0, world.duration - world.simTick * DT);
+
+  // 2a. Fuel decay (1/s) and shade drain (5/s), in integer 1/60 units.
+  for (const lantern of world.lanterns) {
+    if (lantern.lit) {
+      lantern.fuel -= (TUNING.fuel_decay_per_s * FUEL_UNITS_PER_POINT) / TICKS_PER_SECOND;
+    }
+  }
+  for (const shade of world.shades) {
+    if (shade.state !== 'drain' || !shade.targetLanternId) continue;
+    const lantern = world.lanterns.find((l) => l.id === shade.targetLanternId);
+    if (!lantern || !lantern.lit) continue;
+    lantern.fuel -= (TUNING.drain_per_s * FUEL_UNITS_PER_POINT) / TICKS_PER_SECOND;
+    if (world.simTick % TICKS_PER_SECOND === 0) {
+      events.push({
+        tick: world.tick,
+        name: 'fuel_drain',
+        data: {
+          lantern_id: lantern.id,
+          shade_id: shade.id,
+          fuel: round1(lantern.fuel / FUEL_UNITS_PER_POINT),
+        },
+      });
+    }
+  }
+  // 2b. A lantern that ran dry goes out immediately after the fuel update.
+  for (const lantern of world.lanterns) {
+    if (lantern.lit && lantern.fuel <= 0) {
+      lantern.fuel = 0;
+      lantern.lit = false;
+      lantern.deposited = 0;
+      events.push({ tick: world.tick, name: 'lantern_out', data: { lantern_id: lantern.id } });
+      for (const shade of world.shades) {
+        if (shade.state === 'drain' && shade.targetLanternId === lantern.id) {
+          shade.state = 'wander';
+          shade.targetLanternId = undefined;
+          shade.stateTicksLeft = 120;
+        }
+      }
+    }
+  }
+
   const player = world.player;
   player.invuln = Math.max(0, player.invuln - 1);
   player.dashCd = Math.max(0, player.dashCd - 1);
@@ -65,7 +114,9 @@ export function step(world: World, input: InputState): GameEvent[] {
     } else if (shade.stateTicksLeft === 0 && shade.state === 'recoil') {
       shade.state = 'chase';
     } else if (shade.stateTicksLeft === 0 && shade.state === 'stunned') {
-      shade.state = 'chase';
+      // TICKET-03: after a stun the shade resumes wandering, not chasing.
+      shade.state = 'wander';
+      shade.stateTicksLeft = 120;
     }
   }
   for (const drifter of world.drifters) {
@@ -131,13 +182,14 @@ export function step(world: World, input: InputState): GameEvent[] {
   spawnDrifters(world);
   spawnWind(world);
 
-  // 11. Win / lose
+  // 11. Win / lose — evaluated after every update, dawn tick included.
   if (player.flames <= 0) {
     finish(world, events, 'lost', 'no_flames');
-  } else if (world.lanterns.every((lantern) => lantern.lit)) {
-    finish(world, events, 'won', 'all_lit');
   } else if (world.timeLeft <= 0) {
-    finish(world, events, 'lost', 'dawn');
+    const needed = Math.ceil(TUNING.win_ratio * world.lanterns.length);
+    const lit = world.lanterns.filter((lantern) => lantern.lit).length;
+    if (lit >= needed) finish(world, events, 'won', 'dawn_survived');
+    else finish(world, events, 'lost', 'dawn');
   }
 
   return events;
@@ -304,7 +356,7 @@ function pickupMotes(world: World, events: GameEvent[]): void {
   const player = world.player;
   for (let i = world.motes.length - 1; i >= 0; i -= 1) {
     const mote = world.motes[i];
-    if (player.carried >= TUNING.carry_capacity) break;
+    if (player.carried >= player.capacity) break;
     if (distXZ(player.pos, mote.pos) > TUNING.pickup_radius) continue;
     if (Math.abs(player.pos[1] - mote.pos[1]) > TUNING.pickup_height_diff) continue;
     world.motes.splice(i, 1);
@@ -332,37 +384,102 @@ function pickupCharms(world: World, events: GameEvent[]): void {
 
 function deposit(world: World, events: GameEvent[]): void {
   const player = world.player;
-  const lit = world.lanterns.map((lantern) => lantern.lit);
+  // v1.2: only lanterns that can receive light — unlit, or lit but not full.
+  const accepts = world.lanterns.map(
+    (lantern) => !lantern.lit || lantern.fuel < FUEL_MAX_UNITS,
+  );
   const index = nearestLanternIndex(
     world.lanterns.map((l) => l.pos),
     player.pos,
-    lit,
+    accepts.map((accepted) => !accepted),
   );
   if (index < 0) return;
   const lantern = world.lanterns[index];
   if (distXZ(player.pos, lantern.pos) > TUNING.interact_radius) return;
-  const amount = Math.min(player.carried, TUNING.lantern_cost - lantern.deposited);
-  if (amount > 0) {
-    player.carried -= amount;
-    lantern.deposited += amount;
-    world.score += amount * TUNING.score.per_mote;
-    events.push({
-      tick: world.tick,
-      name: 'deposit',
-      data: { lantern_id: lantern.id, amount, deposited: lantern.deposited },
-    });
+
+  if (!lantern.lit) {
+    const cost = lantern.ever_lit ? TUNING.relight_cost : TUNING.lantern_cost;
+    const amount = Math.min(player.carried, cost - lantern.deposited);
+    if (amount > 0) {
+      player.carried -= amount;
+      lantern.deposited += amount;
+      world.score += amount * TUNING.score.per_mote;
+      events.push({
+        tick: world.tick,
+        name: 'deposit',
+        data: { lantern_id: lantern.id, amount, deposited: lantern.deposited },
+      });
+    }
+    if (lantern.deposited >= cost) {
+      const relight = lantern.ever_lit;
+      lantern.lit = true;
+      lantern.fuel = FUEL_MAX_UNITS;
+      lantern.deposited = cost;
+      if (relight) lantern.relit_count += 1;
+      else lantern.ever_lit = true;
+      player.successful_lights += 1;
+      player.capacity = Math.min(
+        TUNING.capacity_max,
+        TUNING.carry_capacity + 2 * player.successful_lights,
+      );
+      world.score += relight ? TUNING.score.per_relight : TUNING.score.per_lantern;
+      events.push({
+        tick: world.tick,
+        name: 'lantern_lit',
+        data: { lantern_id: lantern.id, relight },
+      });
+      pushShadesOutOf(world, lantern);
+    }
+    return;
   }
-  if (lantern.deposited >= TUNING.lantern_cost && !lantern.lit) {
-    lantern.lit = true;
-    world.score += TUNING.score.per_lantern;
-    events.push({ tick: world.tick, name: 'lantern_lit', data: { lantern_id: lantern.id } });
+
+  // Lit lantern: top up fuel with whole motes (10 fuel each).
+  const perMoteUnits = TUNING.fuel_per_mote * FUEL_UNITS_PER_POINT;
+  const needed = Math.ceil((FUEL_MAX_UNITS - lantern.fuel) / perMoteUnits);
+  const used = Math.min(player.carried, needed);
+  if (used <= 0) return;
+  player.carried -= used;
+  lantern.fuel = Math.min(FUEL_MAX_UNITS, lantern.fuel + used * perMoteUnits);
+  world.score += used * TUNING.score.per_mote;
+  events.push({
+    tick: world.tick,
+    name: 'refuel',
+    data: {
+      lantern_id: lantern.id,
+      amount: used,
+      fuel: round1(lantern.fuel / FUEL_UNITS_PER_POINT),
+    },
+  });
+  // Crossing the low-fuel threshold repels nearby shades without damage.
+  if (lantern.fuel >= LOW_FUEL_UNITS) pushShadesOutOf(world, lantern);
+}
+
+/** Shades inside the safe radius are pushed to its edge over at most 30 ticks. */
+function pushShadesOutOf(world: World, lantern: Lantern): void {
+  for (const shade of world.shades) {
+    if (shade.state === 'stunned') continue;
+    const distance = distXZ(shade.pos, lantern.pos);
+    if (distance >= TUNING.safe_radius) continue;
+    const dx = shade.pos[0] - lantern.pos[0];
+    const dz = shade.pos[2] - lantern.pos[2];
+    const length = Math.hypot(dx, dz) || 1;
+    const nx = length < 0.001 ? 1 : dx / length;
+    const nz = length < 0.001 ? 0 : dz / length;
+    const perTick = (TUNING.safe_radius - distance) / TUNING.safe_push_ticks;
+    shade.vel = [nx * perTick, nz * perTick];
+    shade.pushTicksLeft = TUNING.safe_push_ticks;
+    if (shade.state === 'drain') {
+      shade.state = 'wander';
+      shade.targetLanternId = undefined;
+    }
   }
 }
 
 function updateSafeZones(world: World): void {
   for (const shade of world.shades) {
     for (const lantern of world.lanterns) {
-      if (!lantern.lit) continue;
+      // v1.2: fuel below 30 means the lantern no longer protects the area.
+      if (!lantern.lit || lantern.fuel < LOW_FUEL_UNITS) continue;
       const distance = distXZ(shade.pos, lantern.pos);
       if (distance >= TUNING.safe_radius) continue;
       const dx = shade.pos[0] - lantern.pos[0];
@@ -387,9 +504,11 @@ function pulse(world: World, events: GameEvent[]): void {
   for (const shade of world.shades) {
     const shadeCenter: Vec3 = [shade.pos[0], shade.pos[1] + TUNING.pulse_center_offset, shade.pos[2]];
     if (dist3(center, shadeCenter) > TUNING.pulse_radius) continue;
-    world.score += TUNING.score.per_stun;
+    const wasDraining = shade.state === 'drain';
+    world.score += wasDraining ? TUNING.score.per_draining_stun : TUNING.score.per_stun;
     stunnedIds.push(shade.id);
     shade.state = 'stunned';
+    shade.targetLanternId = undefined;
     shade.stateTicksLeft = TUNING.pulse_stun_s * TICKS_PER_SECOND;
     const dx = shade.pos[0] - player.pos[0];
     const dz = shade.pos[2] - player.pos[2];
@@ -435,17 +554,44 @@ function moveShades(world: World): void {
       updateShadeHeight(world, shade);
       continue;
     }
-    if (shade.state === 'stunned') continue;
-    if (shade.state === 'spawning') continue;
+    if (shade.state === 'stunned' || shade.state === 'spawning') continue;
+    if (shade.state === 'recoil') {
+      updateShadeHeight(world, shade);
+      continue;
+    }
     const distance = distXZ(shade.pos, player.pos);
+
+    if (shade.state === 'drain') {
+      const target = world.lanterns.find((l) => l.id === shade.targetLanternId);
+      const stillWeak =
+        target && target.lit && target.fuel < LOW_FUEL_UNITS &&
+        distXZ(shade.pos, target.pos) <= 2;
+      if (distance <= TUNING.safe_radius) {
+        shade.state = 'chase';
+        shade.stateTicksLeft = 0;
+        shade.targetLanternId = undefined;
+      } else if (!stillWeak) {
+        shade.state = 'wander';
+        shade.stateTicksLeft = 120;
+        shade.targetLanternId = undefined;
+      } else {
+        updateShadeHeight(world, shade);
+        continue; // standing still while draining
+      }
+    }
+
+    if (shade.state === 'chase' && distance > TUNING.shade_lose) {
+      shade.state = 'wander';
+      shade.stateTicksLeft = 120;
+      shade.targetLanternId = undefined;
+      shade.vel = [randomDirection(world.rng), randomDirection(world.rng)];
+    }
     if (shade.state === 'wander' && distance <= TUNING.shade_detect) {
       shade.state = 'chase';
       shade.stateTicksLeft = 0;
-    } else if (shade.state === 'chase' && distance > TUNING.shade_lose) {
-      shade.state = 'wander';
-      shade.stateTicksLeft = 120;
-      shade.vel = [randomDirection(world.rng), randomDirection(world.rng)];
+      shade.targetLanternId = undefined;
     }
+
     if (shade.state === 'chase') {
       const dx = player.pos[0] - shade.pos[0];
       const dz = player.pos[2] - shade.pos[2];
@@ -455,18 +601,53 @@ function moveShades(world: World): void {
         shade.pos[2] += (dz / length) * speed * DT;
       }
     } else if (shade.state === 'wander') {
-      shade.pos[0] += shade.vel[0] * TUNING.drifter_idle_speed * DT;
-      shade.pos[2] += shade.vel[1] * TUNING.drifter_idle_speed * DT;
+      let target = findTargetLantern(world, shade.pos, (l) => l.lit && l.fuel < LOW_FUEL_UNITS);
+      const weak = target !== undefined;
+      if (!target) target = findTargetLantern(world, shade.pos, (l) => !l.lit);
+      if (target) {
+        const dx = target.pos[0] - shade.pos[0];
+        const dz = target.pos[2] - shade.pos[2];
+        const length = Math.hypot(dx, dz) || 1;
+        shade.pos[0] += (dx / length) * speed * DT;
+        shade.pos[2] += (dz / length) * speed * DT;
+        if (weak && length <= 2) {
+          shade.state = 'drain';
+          shade.stateTicksLeft = 0;
+          shade.targetLanternId = target.id;
+        }
+      } else {
+        shade.pos[0] += shade.vel[0] * TUNING.drifter_idle_speed * DT;
+        shade.pos[2] += shade.vel[1] * TUNING.drifter_idle_speed * DT;
+      }
     }
     clampToSafeZones(world, shade);
     updateShadeHeight(world, shade);
   }
 }
 
+/** Nearest lantern matching a predicate; ties go to the smaller id. */
+function findTargetLantern(
+  world: World,
+  pos: Vec3,
+  predicate: (lantern: Lantern) => boolean,
+): Lantern | undefined {
+  let best: Lantern | undefined;
+  let bestDistance = Infinity;
+  for (const lantern of world.lanterns) {
+    if (!predicate(lantern)) continue;
+    const distance = distXZ(pos, lantern.pos);
+    if (distance < bestDistance) {
+      best = lantern;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
 function clampToSafeZones(world: World, shade: Shade): void {
   if (shade.pushTicksLeft > 0) return;
   for (const lantern of world.lanterns) {
-    if (!lantern.lit) continue;
+    if (!lantern.lit || lantern.fuel < LOW_FUEL_UNITS) continue;
     const distance = distXZ(shade.pos, lantern.pos);
     if (distance >= TUNING.safe_radius) continue;
     const dx = shade.pos[0] - lantern.pos[0];
@@ -657,9 +838,13 @@ function spawnWind(world: World): void {
 function finish(world: World, events: GameEvent[], result: 'won' | 'lost', reason: string): void {
   world.state = result;
   if (result === 'won') {
-    world.score +=
-      Math.floor(world.timeLeft) * TUNING.score.per_second_left +
-      world.player.flames * TUNING.score.per_flame_left;
+    // TICKET-03: dawn bonus depends on lanterns still lit, not time left.
+    for (const lantern of world.lanterns) {
+      if (!lantern.lit) continue;
+      world.score +=
+        TUNING.score.per_lantern_at_dawn + Math.floor(lantern.fuel / FUEL_UNITS_PER_POINT);
+    }
+    world.score += world.player.flames * TUNING.score.per_flame_left;
     world.totalScore += world.score;
   }
   events.push({ tick: world.tick, name: 'game_over', data: { result, reason } });
@@ -672,4 +857,8 @@ function randomDirection(rng: () => number): number {
 
 function round3(value: number): number {
   return Math.round(value * 1000) / 1000;
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
 }

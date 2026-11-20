@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { NIGHTS, TICKS_PER_SECOND, TUNING } from './sim/config';
+import { FUEL_MAX_UNITS, NIGHTS, TICKS_PER_SECOND, TUNING } from './sim/config';
 import { step } from './sim/step';
 import type { InputState, World } from './sim/types';
 import { createWorld } from './sim/world';
@@ -18,37 +18,51 @@ const C = {
   moteGlow: '#FFE58A',
   shade: '#120A1A',
   shadeEdge: '#7A3CFF',
+  shadeEdgeColorblind: '#00B3FF',
   stunned: '#3A3450',
   cloth: '#E8E2D0',
   red: '#C8102E',
   gold: '#F2C14E',
   drifter: '#8FA3B8',
   danger: '#FF5A5F',
+  dangerColorblind: '#FFFFFF',
   text: '#F5F1E6',
 } as const;
 
 interface Settings {
   volume: number;
   sensitivity: number;
+  /** TICKET-03: high-contrast palette for colour-blind players. */
+  colorblind: boolean;
 }
 
 const settings: Settings = loadSettings();
 let volume = settings.volume;
 let sensitivity = settings.sensitivity;
+let colorblind = settings.colorblind;
+
+/** TICKET-03: warning UI turns white in the colour-blind palette. */
+function warningColor(): string {
+  return colorblind ? C.dangerColorblind : C.danger;
+}
 
 function loadSettings(): Settings {
+  const defaults: Settings = { volume: 0.5, sensitivity: 1, colorblind: false };
   try {
     const raw = localStorage.getItem('dao-den-long-settings');
-    if (raw) return { volume: 0.5, sensitivity: 1, ...JSON.parse(raw) };
+    if (raw) return { ...defaults, ...JSON.parse(raw) };
   } catch {
     /* ignore */
   }
-  return { volume: 0.5, sensitivity: 1 };
+  return defaults;
 }
 
 function saveSettings(): void {
   try {
-    localStorage.setItem('dao-den-long-settings', JSON.stringify({ volume, sensitivity }));
+    localStorage.setItem(
+      'dao-den-long-settings',
+      JSON.stringify({ volume, sensitivity, colorblind }),
+    );
   } catch {
     /* ignore */
   }
@@ -114,7 +128,9 @@ function beep(frequency: number, duration = 0.12, type: OscillatorType = 'sine')
 const soundFor: Record<string, number> = {
   mote_picked: 880,
   deposit: 660,
+  refuel: 720,
   lantern_lit: 990,
+  lantern_out: 140,
   pulse: 520,
   player_hit: 180,
   dash: 420,
@@ -287,6 +303,43 @@ function buildLantern(): THREE.Group {
   const light = new THREE.PointLight(C.lit, 0, 24, 2);
   light.position.y = 3.4;
   group.add(light);
+
+  // TICKET-03: a fuel gauge above every lantern, plus a torn-paper marker
+  // that distinguishes an extinguished lantern without relying on colour.
+  const barBack = new THREE.Mesh(
+    new THREE.BoxGeometry(1.3, 0.16, 0.1),
+    new THREE.MeshBasicMaterial({ color: '#1B2350' }),
+  );
+  barBack.position.set(0, 4.25, 0);
+  barBack.name = 'fuelBarBack';
+  barBack.visible = false;
+  group.add(barBack);
+  const barFill = new THREE.Mesh(
+    new THREE.BoxGeometry(1.24, 0.1, 0.12),
+    new THREE.MeshBasicMaterial({ color: C.lit }),
+  );
+  barFill.position.set(0, 4.25, 0.02);
+  barFill.name = 'fuelBarFill';
+  barFill.visible = false;
+  group.add(barFill);
+
+  const tearShape = new THREE.Shape();
+  tearShape.moveTo(-0.55, 0.55);
+  tearShape.lineTo(0.55, 0.55);
+  tearShape.lineTo(0.55, -0.1);
+  tearShape.lineTo(0.2, 0.08);
+  tearShape.lineTo(-0.05, -0.42);
+  tearShape.lineTo(-0.32, -0.06);
+  tearShape.lineTo(-0.55, -0.3);
+  tearShape.closePath();
+  const tear = new THREE.Mesh(
+    new THREE.ShapeGeometry(tearShape),
+    new THREE.MeshStandardMaterial({ color: C.off, side: THREE.DoubleSide }),
+  );
+  tear.position.set(0, 3.4, 0.65);
+  tear.name = 'tear';
+  tear.visible = false;
+  group.add(tear);
   return group;
 }
 
@@ -321,7 +374,7 @@ function menu(): void {
   showOverlay(`
     <div class="panel">
       <h1>Đảo Đèn Lồng</h1>
-      <p>Ba đêm — ba hòn đảo. Hãy thắp sáng trước bình minh.</p>
+      <p>Ba đêm — ba hòn đảo. Châm dầu, giữ ít nhất 60% đèn sáng tới bình minh.</p>
       <div class="row">
         ${([1, 2, 3] as const)
           .map((n) => `<button data-night="${n}">Đêm ${n} · ${NIGHTS[n].name}</button>`)
@@ -345,16 +398,22 @@ function settingsPanel(): void {
       <h2>Cài đặt</h2>
       <label>Âm lượng <input id="vol" type="range" min="0" max="1" step="0.05" value="${volume}"></label>
       <label>Độ nhạy chuột <input id="sens" type="range" min="0.2" max="3" step="0.1" value="${sensitivity}"></label>
+      <label><input id="cb" type="checkbox" ${colorblind ? 'checked' : ''}> Bảng màu dễ phân biệt</label>
       <button data-action="back">Quay lại</button>
     </div>`);
   const vol = overlay.querySelector<HTMLInputElement>('#vol')!;
   const sens = overlay.querySelector<HTMLInputElement>('#sens')!;
+  const cb = overlay.querySelector<HTMLInputElement>('#cb')!;
   vol.oninput = () => {
     volume = Number(vol.value);
     saveSettings();
   };
   sens.oninput = () => {
     sensitivity = Number(sens.value);
+    saveSettings();
+  };
+  cb.onchange = () => {
+    colorblind = cb.checked;
     saveSettings();
   };
   overlay.querySelector<HTMLButtonElement>('[data-action="back"]')!.onclick = menu;
@@ -471,8 +530,11 @@ function syncScene(w: World): void {
     p.invuln > 0 ? C.danger : '#000000',
   );
 
-  const lit = w.lanterns.filter((l) => l.lit).length;
-  ambient.intensity = 0.15 + 0.55 * (lit / w.lanterns.length);
+  // TICKET-03: ambient light follows remaining fuel, so lamps going out
+  // visibly darkens the island.
+  const totalFuel = w.lanterns.reduce((sum, l) => sum + (l.lit ? l.fuel / FUEL_MAX_UNITS : 0), 0);
+  ambient.intensity = 0.15 + 0.55 * (totalFuel / w.lanterns.length);
+  const lowPulse = Math.floor(w.tick / 30) % 2 === 0; // 1 Hz blink
 
   for (const lantern of w.lanterns) {
     let group = meshCache.lanterns.get(lantern.id);
@@ -482,13 +544,27 @@ function syncScene(w: World): void {
       worldGroup.add(group);
     }
     group.position.set(lantern.pos[0], lantern.pos[1], lantern.pos[2]);
+    const fuelRatio = Math.max(0, Math.min(1, lantern.fuel / FUEL_MAX_UNITS));
+    const weak = lantern.lit && fuelRatio * 100 < TUNING.low_fuel_threshold;
+    const visible = !weak || lowPulse;
     const cage = group.getObjectByName('cage') as THREE.Mesh;
     const material = cage.material as THREE.MeshStandardMaterial;
     material.color.set(lantern.lit ? C.lit : C.off);
     material.emissive.set(lantern.lit ? C.lit : '#000000');
-    material.emissiveIntensity = lantern.lit ? 2 : 0;
+    material.emissiveIntensity = visible && lantern.lit ? 2 : 0;
     const light = group.children.find((child) => child instanceof THREE.PointLight) as THREE.PointLight;
-    light.intensity = lantern.lit ? 16 : 0;
+    light.intensity = visible && lantern.lit ? 16 * (0.5 + 0.5 * fuelRatio) : 0;
+
+    group.scale.y = lantern.lit ? 1 : 0.8; // extinguished lantern collapses 20%
+    const tear = group.getObjectByName('tear') as THREE.Mesh;
+    tear.visible = !lantern.lit;
+    const barBack = group.getObjectByName('fuelBarBack') as THREE.Mesh;
+    const barFill = group.getObjectByName('fuelBarFill') as THREE.Mesh;
+    barBack.visible = lantern.lit;
+    barFill.visible = lantern.lit && visible;
+    barFill.scale.x = fuelRatio;
+    barFill.position.x = -(1 - fuelRatio) * 0.62;
+    (barFill.material as THREE.MeshBasicMaterial).color.set(weak ? warningColor() : C.lit);
   }
 
   for (const mote of w.motes) {
@@ -511,13 +587,28 @@ function syncScene(w: World): void {
     let mesh = meshCache.shades.get(shade.id);
     if (!mesh) {
       mesh = new THREE.Mesh(shadeGeometry, shadeMaterial.clone());
+      // Eyes use the same accent as the rim so both change with the palette.
+      for (const side of [-1, 1]) {
+        const eye = new THREE.Mesh(
+          new THREE.SphereGeometry(0.11, 8, 8),
+          new THREE.MeshBasicMaterial({ color: C.shadeEdge }),
+        );
+        eye.position.set(side * 0.25, 0.15, 0.72);
+        mesh.add(eye);
+      }
       meshCache.shades.set(shade.id, mesh);
       worldGroup.add(mesh);
     }
     mesh.position.set(shade.pos[0], shade.pos[1] + 1, shade.pos[2]);
+    const accent = colorblind ? C.shadeEdgeColorblind : C.shadeEdge;
     const material = mesh.material as THREE.MeshStandardMaterial;
     material.color.set(shade.state === 'stunned' ? C.stunned : C.shade);
-    material.emissive.set(shade.state === 'stunned' ? C.stunned : C.shadeEdge);
+    material.emissive.set(shade.state === 'stunned' ? C.stunned : accent);
+    for (const child of mesh.children) {
+      if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshBasicMaterial) {
+        child.material.color.set(accent);
+      }
+    }
   }
 
   for (const drifter of w.drifters) {
@@ -554,26 +645,37 @@ function updateHud(w: World): void {
   const time = fmtTime(w.timeLeft);
   const danger = w.timeLeft <= 30;
   const p = w.player;
-  const bars = Array.from({ length: TUNING.carry_capacity }, (_, i) =>
+  // TICKET-03: capacity grows with successful lights, up to 20.
+  const bars = Array.from({ length: p.capacity }, (_, i) =>
     i < p.carried ? '■' : '□',
   ).join('');
-  const nearest = w.lanterns
-    .filter((l) => !l.lit)
+  const accepting = w.lanterns.filter(
+    (l) => !l.lit || l.fuel < FUEL_MAX_UNITS,
+  );
+  const nearest = accepting
     .map((l) => ({ l, d: Math.hypot(l.pos[0] - p.pos[0], l.pos[2] - p.pos[2]) }))
     .sort((a, b) => a.d - b.d)[0];
   const near = nearest && nearest.d <= TUNING.interact_radius;
+  const lit = w.lanterns.filter((l) => l.lit).length;
+  const needed = Math.ceil(TUNING.win_ratio * w.lanterns.length);
+  const warn = colorblind ? '⚠ ' : '';
+  const nearestText = near
+    ? nearest.l.lit
+      ? `E — Châm dầu (${p.carried} mang, đèn ${(nearest.l.fuel / FUEL_MAX_UNITS * 100).toFixed(0)}%)`
+      : `E — ${nearest.l.ever_lit ? 'Thắp lại' : 'Thắp đèn'} (${p.carried}/${nearest.l.ever_lit ? TUNING.relight_cost : TUNING.lantern_cost})`
+    : '';
   hud.innerHTML = `
     <div class="top">
       <div class="flames">${'🔥'.repeat(Math.max(0, p.flames))}${'✕'.repeat(Math.max(0, TUNING.flames - p.flames))}</div>
-      <div class="clock ${danger ? 'blink' : ''}" style="color:${danger ? C.danger : C.text}">${time}</div>
-      <div class="score">Đèn ${w.lanterns.filter((l) => l.lit).length}/${w.lanterns.length} · ${w.score}</div>
+      <div class="clock ${danger ? 'blink' : ''}" style="color:${danger ? warningColor() : C.text}">${warn}${time}</div>
+      <div class="score">Đèn ${lit}/${w.lanterns.length} · cần ${needed} · ${w.score}</div>
     </div>
     <div class="bottom">
-      <div class="motes">${bars}</div>
+      <div class="motes">${bars} ${p.carried}/${p.capacity}</div>
       <div class="cooldowns">Lướt ${(p.dashCd / 60).toFixed(1)}s · Tỏa sáng ${(p.pulseCd / 60).toFixed(1)}s</div>
     </div>
-    ${near ? `<div class="prompt">E — Nạp ánh sáng (${p.carried}/${TUNING.lantern_cost})</div>` : ''}
-    ${nearest && nearest.d > TUNING.interact_radius ? `<div class="arrow">➤ Đèn gần nhất ${nearest.d.toFixed(0)}m</div>` : ''}`;
+    ${near ? `<div class="prompt">${nearestText}</div>` : ''}
+    ${nearest && nearest.d > TUNING.interact_radius ? `<div class="arrow">➤ Đèn nhận dầu gần nhất ${nearest.d.toFixed(0)}m</div>` : ''}`;
   hint.textContent = 'WASD di chuyển · Space nhảy · Shift lướt · E nạp đèn · Q tỏa sáng · Esc tạm dừng';
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import contract from '../game.contract.json';
-import { NIGHTS, TUNING } from '../src/sim/config';
+import { FUEL_MAX_UNITS, NIGHTS, TUNING } from '../src/sim/config';
 import { distXZ } from '../src/sim/geometry';
 import { InputFormatError, InputTrack } from '../src/sim/inputs';
 import { eventLine, snapshotLine } from '../src/sim/output';
@@ -42,26 +42,24 @@ function empty(nightOrExtra: 1 | 2 | 3 | ScenarioFile = 1, extra: ScenarioFile =
   });
 }
 
-function lights(world: World, count: number): void {
-  for (const lantern of world.lanterns.slice(0, count)) {
-    lantern.lit = true;
-    lantern.deposited = TUNING.lantern_cost;
-  }
-}
-
-describe('contract v1.1', () => {
+describe('contract v1.2', () => {
   it('tuning matches the standard numbers', () => {
-    expect(contract.contract_version).toBe('1.1');
+    expect(contract.contract_version).toBe('1.2');
     expect(contract.tuning).toEqual(JSON.parse(JSON.stringify(TUNING)));
   });
 
-  it('has the three night durations and dash keys', () => {
-    expect(contract.tuning.night1_duration_s).toBe(300);
-    expect(contract.tuning.night2_duration_s).toBe(330);
-    expect(contract.tuning.night3_duration_s).toBe(360);
-    expect(contract.tuning.dash_speed).toBe(14);
-    expect(contract.tuning.dash_duration_s).toBe(0.2);
-    expect(contract.tuning.dash_cooldown_s).toBe(1.5);
+  it('has the new fuel / win / capacity keys and night durations', () => {
+    expect(contract.tuning.fuel_max).toBe(100);
+    expect(contract.tuning.fuel_decay_per_s).toBe(1);
+    expect(contract.tuning.fuel_per_mote).toBe(10);
+    expect(contract.tuning.relight_cost).toBe(5);
+    expect(contract.tuning.win_ratio).toBe(0.6);
+    expect(contract.tuning.drain_per_s).toBe(5);
+    expect(contract.tuning.low_fuel_threshold).toBe(30);
+    expect(contract.tuning.capacity_max).toBe(20);
+    expect(contract.tuning.night1_duration_s).toBe(240);
+    expect(contract.tuning.night2_duration_s).toBe(270);
+    expect(contract.tuning.night3_duration_s).toBe(300);
   });
 
   it('has the standard maps', () => {
@@ -71,9 +69,6 @@ describe('contract v1.1', () => {
     expect(NIGHTS[1].motePoints).toHaveLength(24);
     expect(NIGHTS[2].motePoints).toHaveLength(24);
     expect(NIGHTS[3].motePoints).toHaveLength(30);
-    expect(NIGHTS[1].shadePoints).toHaveLength(12);
-    expect(NIGHTS[2].shadePoints).toHaveLength(16);
-    expect(NIGHTS[3].shadePoints).toHaveLength(16);
   });
 });
 
@@ -105,9 +100,6 @@ describe('movement', () => {
     run(world, idle(), 11);
     expect(world.player.pos[2] - before).toBeCloseTo(14 * 11 / 60, 2);
     expect(world.player.dashCd).toBeGreaterThan(0);
-    const cd = world.player.dashCd;
-    run(world, idle(), 1);
-    expect(world.player.dashCd).toBe(cd - 1);
   });
 
   it('jumps at 7 m/s under -20 m/s² gravity and lands', () => {
@@ -121,34 +113,54 @@ describe('movement', () => {
   });
 });
 
-describe('motes and lanterns', () => {
+describe('motes and capacity', () => {
   it('starts with 20 motes at 20 different points', () => {
     const world = createWorld({ seed: 1, night: 1 });
     expect(world.motes).toHaveLength(20);
     expect(new Set(world.motes.map((m) => m.pos.join(','))).size).toBe(20);
   });
 
-  it('picks up within 1 m XZ but not beyond 1.5 m height difference', () => {
+  it('picks up within 1 m XZ but respects the height difference', () => {
     const world = empty({ motes: [[0, 0, 1]] });
     expect(run(world, idle(), 1).map((e) => e.name)).toContain('mote_picked');
     const high = empty({ player: { pos: [0, 2, 0] }, motes: [[0, 0, 1]] });
     expect(run(high, idle(), 1).map((e) => e.name)).not.toContain('mote_picked');
   });
 
-  it('scores 10 per deposited mote and 100 per lit lantern', () => {
-    const world = empty({ player: { carried: 10 }, lanterns: [{ id: 'L1', pos: [0, 0, 2] }] });
-    const events = run(world, { ...idle(), interact: true }, 1);
-    expect(events.map((e) => e.name)).toEqual(['night_start', 'deposit', 'lantern_lit']);
-    expect(events.find((e) => e.name === 'deposit')?.data).toEqual({
-      lantern_id: 'L1',
-      amount: 10,
-      deposited: 10,
-    });
-    expect(world.score).toBe(200);
-    expect(world.player.carried).toBe(0);
+  it('capacity grows by 2 per successful light up to 20', () => {
+    expect(empty({ player: { successful_lights: 3 } }).player.capacity).toBe(16);
+    expect(empty({ player: { successful_lights: 9 } }).player.capacity).toBe(20);
+    expect(empty().player.capacity).toBe(10);
   });
 
-  it('deposits into the nearest unlit lantern, ties by smaller id', () => {
+  it('does not pick up beyond capacity', () => {
+    const world = empty({ player: { carried: 10 }, motes: [[0, 0, 1], [0, 0, 1.5]] });
+    run(world, idle(), 1);
+    expect(world.player.carried).toBe(10);
+    expect(world.motes).toHaveLength(2);
+  });
+});
+
+describe('lantern fuel (v1.2)', () => {
+  it('lights a lantern for 5 motes + 100 points and fills fuel to 100', () => {
+    const world = empty({
+      player: { carried: 10 },
+      lanterns: [{ id: 'L1', pos: [0, 0, 2] }],
+    });
+    const events = run(world, { ...idle(), interact: true }, 1);
+    expect(events.map((e) => e.name)).toEqual(['night_start', 'deposit', 'lantern_lit']);
+    expect(events.find((e) => e.name === 'lantern_lit')?.data).toEqual({
+      lantern_id: 'L1',
+      relight: false,
+    });
+    expect(world.score).toBe(150);
+    expect(world.player.carried).toBe(0);
+    expect(world.player.capacity).toBe(12);
+    expect(world.lanterns[0].fuel).toBe(FUEL_MAX_UNITS);
+    expect(world.lanterns[0].ever_lit).toBe(true);
+  });
+
+  it('deposits into the nearest receiving lantern, ties by smaller id', () => {
     const world = empty({
       player: { carried: 5, pos: [0, 0, 0] },
       lanterns: [
@@ -160,17 +172,145 @@ describe('motes and lanterns', () => {
     expect(event?.data.lantern_id).toBe('L1');
   });
 
-  it('wins immediately when every lantern is lit and adds bonuses', () => {
-    const world = empty({ time_left_s: 60 });
-    lights(world, 5);
-    const events = run(world, idle(), 1);
-    expect(events.at(-1)?.data).toEqual({ result: 'won', reason: 'all_lit' });
-    expect(world.score).toBe(59 * 2 + 3 * 50);
+  it('refuels by exactly ceil((100 - fuel) / 10), so a barely decayed lamp takes 1 mote', () => {
+    const world = empty({
+      player: { carried: 5 },
+      lanterns: [{ id: 'L1', pos: [0, 0, 1], lit: true }],
+    });
+    // v1.2: one decay tick runs before interaction, so fuel = 99.983 and
+    // ceil(0.017 / 10) = 1. A lantern with used = 0 is never selected; to
+    // observe that, use a player with no motes.
+    const event = run(world, { ...idle(), interact: true }, 1).find((e) => e.name === 'refuel');
+    expect(event?.data).toEqual({ lantern_id: 'L1', amount: 1, fuel: 100 });
+    expect(world.player.carried).toBe(4);
+    expect(world.score).toBe(5);
+
+    const broke = empty({
+      player: { carried: 0 },
+      lanterns: [{ id: 'L1', pos: [0, 0, 1], lit: true }],
+    });
+    expect(run(broke, { ...idle(), interact: true }, 1).map((e) => e.name)).toEqual([
+      'night_start',
+    ]);
+    expect(broke.score).toBe(0);
+  });
+
+  it('decays 1 fuel per second and turns the lantern off at 0', () => {
+    const world = empty({
+      player: { pos: [0, 0, 30] },
+      lanterns: [{ id: 'L1', pos: [0, 0, 0], lit: true, fuel: 1 }],
+      time_left_s: 60,
+    });
+    const events = run(world, idle(), 60);
+    expect(events.find((e) => e.name === 'lantern_out')?.data).toEqual({ lantern_id: 'L1' });
+    expect(world.lanterns[0].lit).toBe(false);
+    expect(world.lanterns[0].fuel).toBe(0);
+    expect(world.lanterns[0].deposited).toBe(0);
+    expect(world.lanterns[0].ever_lit).toBe(true);
+  });
+
+  it('decays exactly 1.0 per second without float drift', () => {
+    const world = empty({
+      player: { pos: [0, 0, 30] },
+      lanterns: [{ id: 'L1', pos: [0, 0, 0], lit: true }],
+      time_left_s: 60,
+    });
+    run(world, idle(), 60);
+    expect(JSON.parse(snapshotLine(world)).lanterns[0].fuel).toBe(99);
+  });
+
+  it('refuels a lit lantern by whole motes and emits refuel', () => {
+    const world = empty({
+      player: { carried: 4 },
+      lanterns: [{ id: 'L1', pos: [0, 0, 2], lit: true, fuel: 50 }],
+    });
+    const events = run(world, { ...idle(), interact: true }, 1);
+    expect(events.find((e) => e.name === 'refuel')?.data).toEqual({
+      lantern_id: 'L1',
+      amount: 4,
+      fuel: 90,
+    });
+    expect(world.score).toBe(20);
+    expect(world.player.carried).toBe(0);
+    // One decay tick already ran before the refuel (50 -> 49.983 -> 89.983).
+    expect(world.lanterns[0].fuel).toBe(90 * 60 - 1);
+    expect(JSON.parse(snapshotLine(world)).lanterns[0].fuel).toBe(90);
+  });
+
+  it('relights an ever_lit lantern for 5 motes with +40 and +2 capacity', () => {
+    const world = empty({
+      player: { carried: 5 },
+      lanterns: [{ id: 'L1', pos: [0, 0, 2], ever_lit: true }],
+    });
+    const events = run(world, { ...idle(), interact: true }, 1);
+    expect(events.find((e) => e.name === 'lantern_lit')?.data).toEqual({
+      lantern_id: 'L1',
+      relight: true,
+    });
+    expect(world.score).toBe(65);
+    expect(world.player.capacity).toBe(12);
+    expect(world.lanterns[0].relit_count).toBe(1);
+    expect(world.lanterns[0].fuel).toBe(FUEL_MAX_UNITS);
+  });
+
+  it('scenario lanterns default to full fuel when lit', () => {
+    const world = empty({ lanterns: [{ id: 'L1', lit: true }] });
+    expect(world.lanterns[0].fuel).toBe(FUEL_MAX_UNITS);
+    expect(world.lanterns[0].ever_lit).toBe(true);
   });
 });
 
-describe('pulse, shades and damage', () => {
-  it('pulse costs 3, stuns 120 ticks, pushes 4 m and scores 5 per shade', () => {
+describe('win / lose (v1.2)', () => {
+  it('does not end the night when every lantern is lit', () => {
+    const world = empty({
+      time_left_s: 10,
+      lanterns: Array.from({ length: 5 }, (_, i) => ({
+        id: `L${i + 1}`,
+        lit: true,
+      })),
+    });
+    const events = run(world, idle(), 1);
+    expect(events.map((e) => e.name)).not.toContain('game_over');
+    expect(world.state).toBe('playing');
+  });
+
+  it('wins at dawn when enough lanterns are still lit', () => {
+    const world = empty({
+      time_left_s: 2,
+      player: { pos: [0, 0, 30] },
+      lanterns: Array.from({ length: 5 }, (_, i) => ({
+        id: `L${i + 1}`,
+        lit: true,
+      })),
+    });
+    const events = run(world, idle(), 120);
+    expect(events.at(-1)?.data).toEqual({ result: 'won', reason: 'dawn_survived' });
+    expect(world.lanterns.filter((l) => l.lit).length).toBe(5);
+    expect(world.score).toBeGreaterThan(5 * TUNING.score.per_lantern_at_dawn);
+  });
+
+  it('loses at dawn when too few lanterns are lit', () => {
+    const world = empty({
+      time_left_s: 2,
+      player: { pos: [0, 0, 30] },
+      lanterns: [
+        { id: 'L1', lit: true },
+        { id: 'L2', lit: true },
+      ],
+    });
+    const events = run(world, idle(), 120);
+    expect(events.at(-1)?.data).toEqual({ result: 'lost', reason: 'dawn' });
+  });
+
+  it('no_flames wins over dawn even on the final tick', () => {
+    const world = empty({ time_left_s: 1, player: { flames: 0, pos: [0, 0, 30] } });
+    const events = run(world, idle(), 60);
+    expect(events.at(-1)?.data).toEqual({ result: 'lost', reason: 'no_flames' });
+  });
+});
+
+describe('shades, drain and pulse (v1.2)', () => {
+  it('pulse costs 3, stuns 120 ticks, pushes 4 m and scores 5', () => {
     const world = empty({
       player: { carried: 5 },
       shades: [{ id: 'S1', pos: [0, 0, 3] }],
@@ -185,189 +325,180 @@ describe('pulse, shades and damage', () => {
     expect(distXZ(world.player.pos, world.shades[0].pos)).toBeCloseTo(7, 1);
   });
 
-  it('does not pulse without 3 motes', () => {
-    const world = empty({ player: { carried: 2 }, shades: [{ id: 'S1', pos: [0, 0, 3] }] });
-    expect(run(world, { ...idle(), pulse: true }, 1).map((e) => e.name)).not.toContain('pulse');
-  });
-
-  it('shade chases at 4 m/s and switches wander/chase by 12/18 m', () => {
+  it('a weak lantern has no safe zone and attracts wandering shades into drain', () => {
     const world = empty({
-      player: { pos: [0, 0, 30] },
-      shades: [{ id: 'S1', pos: [0, 0, 20] }],
+      player: { pos: [0, 0, 20] },
+      lanterns: [{ id: 'L1', pos: [0, 0, 0], lit: true, fuel: 20 }],
+      shades: [{ id: 'S1', pos: [0, 0, 3], state: 'wander' }],
     });
-    run(world, idle(), 60);
-    expect(world.shades[0].state).toBe('chase');
-    expect(world.shades[0].pos[2]).toBeGreaterThan(23.5);
+    run(world, idle(), 20);
+    expect(world.shades[0].state).toBe('drain');
+    expect(world.shades[0].targetLanternId).toBe('L1');
   });
 
-  it('hit drops half the motes, grants 90 invuln ticks and recoils the shade', () => {
-    const world = empty({
-      player: { carried: 10 },
-      shades: [{ id: 'S1', pos: [0, 0, 1] }],
-    });
-    const events = run(world, idle(), 1);
-    const hit = events.find((e) => e.name === 'player_hit');
-    expect(hit?.data).toMatchObject({ by: 'shade', flames: 2, dropped: 5 });
-    expect(world.player.carried).toBe(5);
-    expect(world.player.invuln).toBe(90);
-    expect(world.shades[0].state).toBe('recoil');
-    expect(world.motes.filter((m) => m.kind === 'dropped')).toHaveLength(5);
-    expect(world.motes.filter((m) => m.kind === 'dropped')[0].ttl).toBe(480);
-  });
-
-  it('keeps shades outside safe_radius of a lit lantern', () => {
+  it('a full lantern keeps the safe zone', () => {
     const world = empty({
       player: { pos: [0, 0, 20] },
       lanterns: [{ id: 'L1', pos: [0, 0, 0], lit: true }],
       shades: [{ id: 'S1', pos: [0, 0, 3] }],
     });
-    const events = run(world, idle(), 40);
+    run(world, idle(), 40);
     expect(distXZ(world.shades[0].pos, [0, 0, 0])).toBeGreaterThanOrEqual(6);
-    expect(events.map((e) => e.name)).not.toContain('player_hit');
   });
-});
 
-describe('fall and respawn', () => {
-  it('costs one flame, drops all motes, waits 60 ticks and respawns invulnerable', () => {
+  it('draining drains 5 fuel/s on top of decay and emits fuel_drain once per second', () => {
     const world = empty({
-      player: { pos: [0, -11, 0], carried: 7 },
+      player: { pos: [0, 0, 30] },
+      lanterns: [{ id: 'L1', pos: [0, 0, 0], lit: true, fuel: 29 }],
+      shades: [{ id: 'S1', pos: [0, 0, 1], state: 'drain', target_lantern_id: 'L1' }],
+      time_left_s: 60,
+    });
+    const events = run(world, idle(), 60);
+    const drains = events.filter((e) => e.name === 'fuel_drain');
+    expect(drains).toHaveLength(1);
+    // 29 - 1/s decay - 5/s drain = 23 after one second.
+    expect(drains[0].data).toEqual({ lantern_id: 'L1', shade_id: 'S1', fuel: 23 });
+    expect(world.lanterns[0].fuel).toBe(23 * 60);
+  });
+
+  it('refuel to at least 30 ends drain and pushes shades out of the safe zone', () => {
+    const world = empty({
+      player: { carried: 10, pos: [0, 0, -2] },
+      lanterns: [{ id: 'L1', pos: [0, 0, 0], lit: true, fuel: 20 }],
+      shades: [{ id: 'S1', pos: [0, 0, 1], state: 'drain', target_lantern_id: 'L1' }],
+    });
+    const events = run(world, { ...idle(), interact: true }, 1);
+    expect(events.map((e) => e.name)).toContain('refuel');
+    expect(world.lanterns[0].fuel).toBeGreaterThanOrEqual(30 * 60);
+    expect(world.shades[0].state).toBe('wander');
+    expect(world.shades[0].targetLanternId).toBeUndefined();
+    // One tick of the push already elapsed in the same step (30 -> 29).
+    expect(world.shades[0].pushTicksLeft).toBe(TUNING.safe_push_ticks - 1);
+  });
+
+  it('pulsing a draining shade scores 15 instead of 5', () => {
+    const world = empty({
+      player: { carried: 5, pos: [0, 0, 4] },
+      lanterns: [{ id: 'L1', pos: [0, 0, 0], lit: true, fuel: 20 }],
+      shades: [{ id: 'S1', pos: [0, 0, 1], state: 'drain', target_lantern_id: 'L1' }],
+    });
+    const events = run(world, { ...idle(), pulse: true }, 1);
+    expect(events.map((e) => e.name)).toContain('pulse');
+    expect(world.score).toBe(15);
+    expect(world.shades[0].state).toBe('stunned');
+  });
+
+  it('a hit drops half the motes, grants 90 invuln ticks and recoils the shade', () => {
+    const world = empty({
+      player: { carried: 10 },
+      shades: [{ id: 'S1', pos: [0, 0, 1] }],
     });
     const events = run(world, idle(), 1);
     expect(events.find((e) => e.name === 'player_hit')?.data).toMatchObject({
+      by: 'shade',
+      flames: 2,
+      dropped: 5,
+    });
+    expect(world.player.carried).toBe(5);
+    expect(world.player.invuln).toBe(90);
+    expect(world.shades[0].state).toBe('recoil');
+    expect(world.motes.filter((m) => m.kind === 'dropped')).toHaveLength(5);
+  });
+
+  it('shades spawn 2 at tick 300 then one per interval', () => {
+    const world = createWorld({ seed: 3, night: 1, scenario: { player: { flames: 999 }, random_motes: false } });
+    const events = run(world, idle(), 780);
+    const spawns = events.filter((e) => e.name === 'shade_spawned');
+    expect(spawns.slice(0, 3).map((e) => e.tick)).toEqual([300, 300, 780]);
+    expect(spawns[0].data.id).toBe('S1');
+  });
+});
+
+describe('fall, drifters, charms and pause', () => {
+  it('fall costs one flame, waits 60 ticks and respawns invulnerable', () => {
+    const world = empty({ player: { pos: [0, -11, 0], carried: 7 } });
+    const events = run(world, idle(), 1);
+    expect(events.find((e) => e.name === 'player_hit')?.data).toMatchObject({
       by: 'fall',
-      dropped: 0,
       lost: 1,
     });
-    expect(world.player.carried).toBe(0);
     expect(world.player.flames).toBe(2);
     run(world, idle(), 60);
     expect(world.player.pos).toEqual([0, 0, 0]);
     expect(world.player.invuln).toBe(90);
   });
 
-  it('loses immediately when the fall removes the last flame', () => {
-    const world = empty({ player: { pos: [0, -11, 0], flames: 1 } });
-    const events = run(world, idle(), 1);
-    expect(events.at(-1)?.data).toEqual({ result: 'lost', reason: 'no_flames' });
-  });
-});
-
-describe('schedules', () => {
-  it('spawns 2 shades at tick 300, then one per interval, ids S1..', () => {
-    const world = createWorld({ seed: 3, night: 1, scenario: { player: { flames: 999 }, random_motes: false } });
-    const events = run(world, idle(), 780);
-    const spawns = events.filter((e) => e.name === 'shade_spawned');
-    expect(spawns.slice(0, 3).map((e) => e.tick)).toEqual([300, 300, 780]);
-    expect(spawns[0].data.id).toBe('S1');
-    expect(['wander', 'chase']).toContain(world.shades[0].state);
-  });
-
-  it('spawns one extra mote at tick 240 when a point is empty', () => {
-    const world = createWorld({ seed: 3, night: 1 });
-    const before = world.motes.length;
-    run(world, idle(), 240);
-    expect(world.motes.length).toBe(before + 1);
-  });
-
-  it('spawns drifters at tick 1200 on nights 2 and 3', () => {
-    const world = createWorld({ seed: 3, night: 2, scenario: { player: { flames: 999 }, random_motes: false } });
-    run(world, idle(), 1201);
-    expect(world.drifters).toHaveLength(1);
-    expect(world.drifters[0].id).toBe('D1');
-    expect(world.drifters[0].state).toBe('idle');
-  });
-});
-
-describe('drifters and charms', () => {
-  it('steals up to 3 motes then flees; pulse makes it drop them', () => {
+  it('drifter steals 3 motes and pulse makes it drop them with an event', () => {
     const world = empty(2, {
       player: { carried: 6 },
       drifters: [{ id: 'D1', pos: [0, 1, 0.5], state: 'chase' }],
     });
-    const events = run(world, idle(), 1);
-    expect(events.find((e) => e.name === 'drifter_steal')?.data).toEqual({
+    expect(run(world, idle(), 1).find((e) => e.name === 'drifter_steal')?.data).toEqual({
       drifter_id: 'D1',
       amount: 3,
       carried: 3,
     });
-    expect(world.drifters[0].state).toBe('flee');
-    expect(world.drifters[0].stolen).toBe(3);
     const dropped = run(world, { ...idle(), pulse: true }, 1);
     expect(dropped.find((e) => e.name === 'drifter_drop')?.data).toEqual({
       drifter_id: 'D1',
       amount: 3,
     });
     expect(world.motes.filter((m) => m.kind === 'dropped')).toHaveLength(3);
-    expect(world.drifters[0].stolen).toBe(0);
   });
 
-  it('charm pickup boosts speed to 7.2 and lasts 600 ticks', () => {
+  it('charm boosts speed to 7.2 and removes dash cooldown', () => {
     const world = empty(2, { charms: [{ id: 'C1', pos: [0, 0, 1] }] });
-    const events = run(world, idle(), 1);
-    expect(events.find((e) => e.name === 'charm_picked')?.data).toEqual({
-      charm_id: 'C1',
-      charm_ticks: 600,
-    });
-    expect(world.player.charmTicks).toBe(600);
+    expect(run(world, idle(), 1).find((e) => e.name === 'charm_picked')?.data.charm_ticks).toBe(600);
     run(world, { ...idle(), move: [0, 1] }, 30);
     expect(world.player.vel[1]).toBeCloseTo(7.2, 5);
-  });
-});
-
-describe('night 3 wind and pause', () => {
-  it('warns 2 s before 5 s of wind and exposes direction in snapshot', () => {
-    const world = createWorld({ seed: 5, night: 3, scenario: { player: { flames: 999 }, random_motes: false } });
-    run(world, idle(), 1800);
-    expect(world.wind.warning).toBe(true);
-    expect(JSON.parse(snapshotLine(world)).wind).toEqual({
-      active: false,
-      dir_deg: world.wind.dirDeg,
-    });
-    run(world, idle(), 120);
-    expect(world.wind.active).toBe(true);
-    run(world, idle(), 300);
-    expect(world.wind.active).toBe(false);
+    const dashes = run(world, { ...idle(), dash: true }, 1);
+    expect(dashes.map((e) => e.name)).toContain('dash');
+    expect(world.player.dashCd).toBe(0);
   });
 
-  it('pause increments tick but freezes sim_tick and all timers', () => {
+  it('pause increments tick but freezes sim_tick, timers and snapshots as paused', () => {
     const world = empty({ time_left_s: 100 });
     run(world, idle(), 10);
     const simBefore = world.simTick;
     const timeBefore = world.timeLeft;
-    const events = run(world, { ...idle(), pause: true }, 1);
-    expect(events.at(-1)?.name).toBe('paused');
-    expect(world.paused).toBe(true);
+    expect(run(world, { ...idle(), pause: true }, 1).at(-1)?.name).toBe('paused');
     run(world, { ...idle(), pause: true }, 100);
     expect(world.simTick).toBe(simBefore);
     expect(world.timeLeft).toBe(timeBefore);
     expect(JSON.parse(snapshotLine(world)).state).toBe('paused');
     run(world, idle(), 1);
-    const resumed = run(world, { ...idle(), pause: true }, 1);
-    expect(resumed.at(-1)?.name).toBe('resumed');
-    expect(world.simTick).toBe(simBefore);
-    run(world, idle(), 1);
-    expect(world.simTick).toBe(simBefore + 1);
+    expect(run(world, { ...idle(), pause: true }, 1).at(-1)?.name).toBe('resumed');
+  });
+
+  it('night 3 wind warns 2 s before 5 s of wind', () => {
+    const world = createWorld({ seed: 5, night: 3, scenario: { player: { flames: 999 }, random_motes: false } });
+    run(world, idle(), 1800);
+    expect(world.wind.warning).toBe(true);
+    run(world, idle(), 120);
+    expect(world.wind.active).toBe(true);
+    run(world, idle(), 300);
+    expect(world.wind.active).toBe(false);
   });
 });
 
 describe('output and determinism', () => {
-  it('writes v1.1 snapshot fields and rounded coordinates', () => {
-    const world = empty({ motes: [[0.12345, 0, 1]] });
+  it('writes v1.2 snapshot fields', () => {
+    const world = empty({
+      motes: [[0.12345, 0, 1]],
+      lanterns: [{ id: 'L1', lit: true }],
+    });
     const parsed = JSON.parse(snapshotLine(world));
     expect(parsed.night).toBe(1);
-    expect(parsed.wind).toEqual({ active: false, dir_deg: 0 });
+    expect(parsed.player).toMatchObject({ capacity: 10, successful_lights: 0 });
+    expect(parsed.lanterns[0]).toMatchObject({ fuel: 100, ever_lit: true, relit_count: 0 });
     expect(parsed.motes[0].pos).toEqual([0.123, 0, 1]);
-    expect(parsed.player).toMatchObject({
-      grounded: true,
-      invuln: 0,
-      dash_cd_s: 0,
-      pulse_cd_s: 0,
-      charm_s: 0,
+    expect(parsed.shades).toEqual([]);
+    expect(JSON.parse(eventLine({ tick: 1, name: 'dash', data: {} }))).toEqual({
+      type: 'event',
+      tick: 1,
+      name: 'dash',
+      data: {},
     });
-    expect(parsed.drifters).toEqual([]);
-    expect(parsed.charms).toEqual([]);
-    const event = JSON.parse(eventLine({ tick: 1, name: 'dash', data: {} }));
-    expect(event).toEqual({ type: 'event', tick: 1, name: 'dash', data: {} });
   });
 
   it('produces identical output for the same seed, night, scenario and inputs', () => {

@@ -1,0 +1,9 @@
+{
+  "player": { "pos": [0, 0, 30], "successful_lights": 6 },
+  "random_motes": false,
+  "random_shades": false,
+  "random_drifters": false,
+  "wind_enabled": false,
+  "motes": [[0, 0, 30]],
+  "time_left_s": 120
+}

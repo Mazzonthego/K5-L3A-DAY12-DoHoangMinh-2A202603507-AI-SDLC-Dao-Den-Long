@@ -1,10 +1,15 @@
+import { FUEL_UNITS_PER_POINT } from './config';
 import type { GameEvent, World } from './types';
 
 function round3(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
 
-/** Serialise one snapshot line (Test Contract v1.1). */
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+/** Serialise one snapshot line (Test Contract v1.2). */
 export function snapshotLine(world: World): string {
   const player = world.player;
   return JSON.stringify({
@@ -23,6 +28,8 @@ export function snapshotLine(world: World): string {
       facing_deg: round3(player.facingDeg),
       flames: player.flames,
       carried: player.carried,
+      capacity: player.capacity,
+      successful_lights: player.successful_lights,
       invuln: player.invuln,
       invuln_s: round3(player.invuln / 60),
       dash_cd_s: round3(player.dashCd / 60),
@@ -36,12 +43,16 @@ export function snapshotLine(world: World): string {
       pos: lantern.pos.map(round3),
       lit: lantern.lit,
       deposited: lantern.deposited,
+      fuel: lantern.lit ? round1(lantern.fuel / FUEL_UNITS_PER_POINT) : 0,
+      ever_lit: lantern.ever_lit,
+      relit_count: lantern.relit_count,
     })),
     shades: world.shades.map((shade) => ({
       id: shade.id,
       pos: shade.pos.map(round3),
       state: shade.state,
       state_ticks_left: shade.stateTicksLeft,
+      target_lantern_id: shade.targetLanternId ?? null,
     })),
     motes: world.motes.map((mote) => ({
       id: mote.id,

@@ -1,8 +1,8 @@
 /**
  * Optional GUI benchmark — measures the real requestAnimationFrame rate of the
- * game at 1280×720 and writes docs/proof/phase-2/fps.txt.
+ * game at 1280×720 and writes docs/proof/<phase>/fps.txt.
  *
- *   npm run fps
+ *   npm run fps -- phase-3
  *
  * It starts Vite, launches headless Chromium/Edge with remote debugging, asks
  * the page to start night 1 through the __daoStartNight hook, then reads the
@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const root = process.cwd();
-const proofDir = join(root, 'docs', 'proof', 'phase-2');
+const proofDir = join(root, 'docs', 'proof', process.argv[2] ?? 'phase-3');
 const tmpDir = join(root, '.tmp');
 mkdirSync(proofDir, { recursive: true });
 mkdirSync(tmpDir, { recursive: true });
@@ -206,7 +206,7 @@ async function main() {
       ].join('\n'),
       'utf8',
     );
-    console.log(`OK — FPS ${sample.avg} at ${sample.width}×${sample.height} (${passed ? 'pass' : 'FAIL'}): docs/proof/phase-2/fps.txt`);
+    console.log(`OK — FPS ${sample.avg} at ${sample.width}×${sample.height} (${passed ? 'pass' : 'FAIL'}): ${proofDir}/fps.txt`);
     if (!passed) process.exitCode = 1;
   } finally {
     edge?.kill();

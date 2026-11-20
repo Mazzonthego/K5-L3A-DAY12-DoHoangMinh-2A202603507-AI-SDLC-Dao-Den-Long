@@ -1,4 +1,4 @@
-import { NIGHTS, TUNING } from './config';
+import { FUEL_MAX_UNITS, FUEL_UNITS_PER_POINT, NIGHTS, TUNING } from './config';
 import { mulberry32 } from './rng';
 import type {
   Charm,
@@ -21,7 +21,7 @@ export interface CreateWorldOptions {
 
 /**
  * Build the initial world (snapshot tick 0) from a scenario file.
- * Contract v1.1 section D: scenario construction emits no events and scores nothing.
+ * Contract v1.2 section D: scenario construction emits no events and scores nothing.
  */
 export function createWorld({
   seed,
@@ -53,6 +53,11 @@ export function createWorld({
       facingDeg: scenario.player?.facing_deg ?? 0,
       flames: scenario.player?.flames ?? TUNING.flames,
       carried: scenario.player?.carried ?? 0,
+      successful_lights: scenario.player?.successful_lights ?? 0,
+      capacity: Math.min(
+        TUNING.capacity_max,
+        TUNING.carry_capacity + 2 * (scenario.player?.successful_lights ?? 0),
+      ),
       invuln: scenario.player?.invuln_ticks ?? 0,
       dashCd: scenario.player?.dash_cd_ticks ?? 0,
       pulseCd: scenario.player?.pulse_cd_ticks ?? 0,
@@ -86,6 +91,9 @@ export function createWorld({
     id: `L${i + 1}`,
     pos: [...lanternPos],
     lit: false,
+    fuel: 0,
+    ever_lit: false,
+    relit_count: 0,
     deposited: 0,
   }));
   for (const update of scenario.lanterns ?? []) {
@@ -93,7 +101,15 @@ export function createWorld({
     if (!lantern) throw new Error(`unknown lantern id: ${update.id}`);
     if (update.pos) lantern.pos = [...update.pos];
     if (update.deposited !== undefined) lantern.deposited = update.deposited;
+    if (update.ever_lit !== undefined) lantern.ever_lit = update.ever_lit;
+    if (update.relit_count !== undefined) lantern.relit_count = update.relit_count;
     if (update.lit !== undefined) lantern.lit = update.lit;
+    // Contract v1.2: lit without an explicit fuel value means a full lantern.
+    lantern.fuel = Math.min(
+      FUEL_MAX_UNITS,
+      Math.max(0, Math.round((update.fuel ?? (lantern.lit ? TUNING.fuel_max : 0)) * FUEL_UNITS_PER_POINT)),
+    );
+    if (lantern.lit) lantern.ever_lit = true;
   }
 
   world.motes = buildMotes(world, scenario);
@@ -137,6 +153,7 @@ function buildShades(scenario: ScenarioFile): Shade[] {
     stateTicksLeft: entry.state_ticks_left ?? 0,
     vel: [0, 0],
     pushTicksLeft: 0,
+    targetLanternId: entry.target_lantern_id,
   }));
 }
 

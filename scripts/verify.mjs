@@ -1,7 +1,7 @@
 /**
- * Verification for Test Contract v1.1 (TICKET-02).
+ * Verification for Test Contract v1.2 (TICKET-03, "Đèn cạn dầu").
  *
- *   npm run verify [-- phase-2]
+ *   npm run verify [-- phase-3]
  *
  * Unit tests + typecheck + headless build + determinism + per-feature scenario
  * evidence + exit codes + full-night performance. Evidence goes to docs/proof/<phase>/.
@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const root = process.cwd();
-const phase = process.argv[2] ?? 'phase-2';
+const phase = process.argv[2] ?? 'phase-3';
 const proofDir = join(root, 'docs', 'proof', phase);
 const tmpDir = join(root, '.tmp');
 mkdirSync(proofDir, { recursive: true });
@@ -95,7 +95,7 @@ writeFileSync(
 check('Determinism', 'two runs, equal sha256', hashA === hashB, hashA);
 log.push(`## Determinism\n\n- sha256 (both runs): \`${hashA}\`\n- identical: **${hashA === hashB}**`);
 
-// 2b. Phase 1 regression — the standard numbers still hold under v1.1.
+// 2b. Phase 1 regression — the standard numbers still hold under v1.2.
 const regressionArgs = [
   '--seed',
   '7',
@@ -123,6 +123,8 @@ check(
   regressionHashA === regressionHashB,
   regressionHashA,
 );
+// The v1.1 fixture explicitly overrides time_left_s to 300, so the exact
+// regression numbers are preserved. The new default duration is checked below.
 check('Phase 1 regression: 60 ticks = 1 s', 'snapshot tick 60 time_left_s', walk60?.time_left_s === 299);
 check('Phase 1 regression: speed 6 m/s', 'snapshot tick 60 vel', walk60?.player?.vel?.[2] === 6);
 check(
@@ -136,13 +138,17 @@ check(
   regressionLines.some((line) => line.name === 'game_over' && line.data.reason === 'no_flames'),
 );
 log.push(
-  `## Phase 1 regression\n\n- sha256 (both runs): \`${regressionHashA}\`\n- 60 ticks → time_left_s 299, speed 6 m/s, mote pickup and no_flames game over all preserved.`,
+  `## Phase 1 regression\n\n- sha256 (both runs): \`${regressionHashA}\`\n- 60 ticks → time_left_s 299 (the v1.1 fixture overrides it to 300), speed 6 m/s, mote pickup and no_flames game over all preserved.`,
 );
 
-// 3. v1.1 snapshot shape
-const requiredPlayer = ['vel', 'grounded', 'invuln', 'dash_cd_s', 'pulse_cd_s', 'charm_s'];
+// 3. v1.2 snapshot shape
+const requiredPlayer = [
+  'vel', 'grounded', 'invuln', 'dash_cd_s', 'pulse_cd_s', 'charm_s', 'capacity',
+  'successful_lights',
+];
+const requiredLantern = ['fuel', 'ever_lit', 'relit_count', 'lit', 'deposited'];
 check(
-  'Snapshot v1.1 fields',
+  'Snapshot v1.2 fields',
   'first snapshot',
   first?.night === 1 &&
     first?.sim_tick === 0 &&
@@ -150,7 +156,9 @@ check(
     Array.isArray(first?.motes) &&
     Array.isArray(first?.drifters) &&
     Array.isArray(first?.charms) &&
-    requiredPlayer.every((key) => key in first.player),
+    Array.isArray(first?.lanterns) &&
+    requiredPlayer.every((key) => key in first.player) &&
+    first.lanterns.every((l) => requiredLantern.every((key) => key in l)),
 );
 check('Coordinates rounded to 3 decimals', 'snapshot player pos', first.player.pos.every((n) => Math.abs(n * 1000 - Math.round(n * 1000)) < 1e-6));
 
@@ -229,6 +237,34 @@ check('Shade spawn schedule', '2 shades at tick 300, 1 at tick 780', spawnLines.
 const night2 = fixtureRun('night2', 2, 'scenario-features.json', null, 60);
 check('--night 2 accepted', 'headless run', night2.at(-1)?.type === 'end' && night2.at(-1)?.night === 2);
 
+// 5b. TICKET-03 (contract v1.2): one headless scenario per new rule.
+const defaultLines = fixtureRun('default', 1, 'scenario-default.json', null, 1);
+check('Night durations 240/270/300 s', 'headless snapshot without time_left_s', defaultLines[0]?.time_left_s === 240);
+const fuelLines = fixtureRun('fuel', 1, 'scenario-fuel.json', null, 120);
+check('Fuel decays 1/s and lantern_out at 0', '1 fuel lantern, 60 ticks → lantern_out', fuelLines.some((l) => l.name === 'lantern_out'));
+check('Lantern off exposes fuel 0 and ever_lit', 'snapshot after lantern_out', fuelLines.some((l) => l.type === 'snapshot' && l.lanterns.some((lantern) => !lantern.lit && lantern.fuel === 0 && lantern.ever_lit)));
+
+const refuelLines = fixtureRun('refuel', 1, 'scenario-refuel.json', 'inputs-interact.json', 60);
+check('Refuel event and fuel restore', '10 motes spent on a 20-fuel lantern', refuelLines.some((l) => l.name === 'refuel' && l.data.amount === 9 && l.data.fuel === 100));
+check('Refuel above 30 ends drain and pushes shade', 'shade leaves drain after refuel', refuelLines.some((l) => l.type === 'snapshot' && l.shades.some((s) => s.state !== 'drain')));
+
+const drainLines = fixtureRun('drain', 1, 'scenario-drain.json', null, 120);
+check('Drain state reported in snapshots', 'weak lantern + shade in drain', drainLines.some((l) => l.type === 'snapshot' && l.shades.some((s) => s.state === 'drain')));
+check('fuel_drain event each second', '60 ticks of drain', drainLines.some((l) => l.name === 'fuel_drain' && l.data.lantern_id === 'L1'));
+check('Multiple drains are cumulative', 'fuel below 23 after one second of decay + drain', drainLines.some((l) => l.type === 'snapshot' && l.tick >= 60 && l.lanterns[0].fuel < 23));
+
+const relightLines = fixtureRun('relight', 1, 'scenario-relight.json', 'inputs-interact.json', 60);
+check('Relight costs 5 motes and awards +40', 'lantern_lit event with relight=true', relightLines.some((l) => l.name === 'lantern_lit' && l.data.relight === true));
+check('Relight grows capacity by 2', 'snapshot capacity 12', relightLines.some((l) => l.type === 'snapshot' && l.player.capacity === 12));
+
+const dawnWinLines = fixtureRun('dawn-win', 1, 'scenario-dawn-win.json', null, 120);
+check('Dawn win needs ceil(0.6 x 5) = 3 lit lanterns', 'game_over dawn_survived', dawnWinLines.some((l) => l.name === 'game_over' && l.data.reason === 'dawn_survived'));
+const dawnLoseLines = fixtureRun('dawn-lose', 1, 'scenario-dawn-lose.json', null, 120);
+check('Dawn loss when fewer than 3 lanterns are lit', 'game_over dawn', dawnLoseLines.some((l) => l.name === 'game_over' && l.data.reason === 'dawn'));
+
+const capacityLines = fixtureRun('capacity', 1, 'scenario-capacity.json', null, 60);
+check('Capacity = 10 + 2 x successful_lights capped at 20', '6 successful lights → 20', capacityLines.some((l) => l.type === 'snapshot' && l.player.capacity === 20));
+
 // 6. Full-night performance (21600 ticks <= 30 s)
 const started = Date.now();
 headless([
@@ -280,7 +316,7 @@ const table = [
 ].join('\n');
 writeFileSync(
   join(proofDir, 'summary.md'),
-  `# Evidence ${phase} — Test Contract v1.1\n\nGenerated on ${new Date().toISOString()}.\n\n${table}\n\n${log.join('\n\n')}\n`,
+  `# Evidence ${phase} — Test Contract v1.2\n\nGenerated on ${new Date().toISOString()}.\n\n${table}\n\n${log.join('\n\n')}\n`,
   'utf8',
 );
 

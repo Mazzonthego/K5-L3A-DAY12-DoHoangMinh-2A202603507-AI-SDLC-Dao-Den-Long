@@ -1,13 +1,18 @@
 /**
- * Shared game types — Test Contract v1.1.
+ * Shared game types — Test Contract v1.2 (TICKET-03, "Đèn cạn dầu").
  *
  * Everything in `src/sim` is pure logic: no DOM, no Three.js, no fs,
- * no Math.random(). The GUI and the headless runner drive this same module.
+ * no WebAudio, no Math.random(). The GUI and the headless runner drive
+ * this same module.
+ *
+ * Lantern fuel is stored as an integer count of 1/60 fuel units so the
+ * decay (1/s) and shade drain (5/s) never accumulate floating-point error.
+ * Only the output layer converts it back to a real number with 1 decimal.
  */
 
 export type Vec3 = [number, number, number];
 export type GameState = 'playing' | 'won' | 'lost';
-export type ShadeState = 'spawning' | 'wander' | 'chase' | 'recoil' | 'stunned';
+export type ShadeState = 'spawning' | 'wander' | 'chase' | 'recoil' | 'stunned' | 'drain';
 export type DrifterState = 'idle' | 'chase' | 'flee' | 'removed';
 export type MoteKind = 'random' | 'dropped';
 
@@ -38,7 +43,7 @@ export interface Tuning {
   dash_speed: number;
   dash_duration_s: number;
   dash_cooldown_s: number;
-  // Extra standard constants from TICKET-02 Part 1.
+  // Standard constants from TICKET-02 Part 1.
   accel_time_s: number;
   jump_speed: number;
   gravity: number;
@@ -78,11 +83,22 @@ export interface Tuning {
   wind_duration_ticks: number;
   wind_warning_ticks: number;
   wind_push_speed: number;
+  // New in TICKET-03 (contract v1.2).
+  fuel_max: number;
+  fuel_decay_per_s: number;
+  fuel_per_mote: number;
+  relight_cost: number;
+  win_ratio: number;
+  drain_per_s: number;
+  low_fuel_threshold: number;
+  capacity_max: number;
   score: {
     per_mote: number;
     per_lantern: number;
+    per_relight: number;
     per_stun: number;
-    per_second_left: number;
+    per_draining_stun: number;
+    per_lantern_at_dawn: number;
     per_flame_left: number;
   };
 }
@@ -103,6 +119,8 @@ export interface Shade {
   /** Horizontal speed while wandering / recoiling / pushed by a pulse. */
   vel: [number, number];
   pushTicksLeft: number;
+  /** Lantern this shade is draining (v1.2). */
+  targetLanternId?: string;
 }
 
 export interface Drifter {
@@ -124,6 +142,10 @@ export interface Lantern {
   id: string;
   pos: Vec3;
   lit: boolean;
+  /** Fuel in integer 1/60 units; 6000 = 100 fuel. */
+  fuel: number;
+  ever_lit: boolean;
+  relit_count: number;
   deposited: number;
 }
 
@@ -135,6 +157,8 @@ export interface Player {
   facingDeg: number;
   flames: number;
   carried: number;
+  capacity: number;
+  successful_lights: number;
   invuln: number;
   dashCd: number;
   pulseCd: number;
@@ -238,6 +262,7 @@ export interface ScenarioFile {
     pos?: Vec3;
     carried?: number;
     flames?: number;
+    successful_lights?: number;
     invuln_ticks?: number;
     dash_cd_ticks?: number;
     pulse_cd_ticks?: number;
@@ -254,6 +279,7 @@ export interface ScenarioFile {
     pos: Vec3;
     state?: ShadeState;
     state_ticks_left?: number;
+    target_lantern_id?: string;
   }>;
   drifters?: Array<{
     id?: string;
@@ -263,6 +289,15 @@ export interface ScenarioFile {
     state_ticks_left?: number;
   }>;
   charms?: Array<{ id: string; pos?: Vec3; available?: boolean; respawn_ticks?: number }>;
-  lanterns?: Array<{ id: string; pos?: Vec3; deposited?: number; lit?: boolean }>;
+  lanterns?: Array<{
+    id: string;
+    pos?: Vec3;
+    deposited?: number;
+    lit?: boolean;
+    /** Real fuel value 0..100; omitted with lit:true means 100. */
+    fuel?: number;
+    ever_lit?: boolean;
+    relit_count?: number;
+  }>;
   time_left_s?: number;
 }

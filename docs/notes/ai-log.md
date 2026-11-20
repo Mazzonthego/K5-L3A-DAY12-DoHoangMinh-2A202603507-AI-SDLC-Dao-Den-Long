@@ -57,3 +57,23 @@ Ghi lại công cụ, việc đã giao, lỗi của AI và ước tính token/ch
 - Thiết kế fixture sai 3 chỗ: `time_left_s: 120` (> 600 tick chạy) nên không có `game_over`; pause chỉ 1 tick nên snapshot mỗi 60 tick không thấy `state: "paused"`; dash thứ 2 đặt ở tick 5 vẫn dính 12 tick dash đầu. Sửa bằng `time_left_s: 5`, `snapshot-every 10`, dash thứ 2 ở tick 15.
 - Đo FPS lần đầu được 1254×627 vì `--window-size` trừ viền trình duyệt, dù số đo 56.2 FPS. Phải dùng CDP `Emulation.setDeviceMetricsOverride` để ép đúng 1280×720 (kết quả cuối 60 FPS).
 - PowerShell báo `Exit code: 1` khi node/git ghi stderr dù lệnh thành công (cảnh báo DEP0190). Luôn đọc stdout/`git log` thay vì tin exit code.
+
+## Phase 3 — «Đèn cạn dầu» (contract v1.2)
+
+| Thời điểm | Công cụ / model | Việc đã giao | Kết quả | Token ước tính |
+|---|---|---|---|---|
+| Phase 3 | OpenCode / Hy4 flash Free | Đọc TICKET-03, chuyển vào `docs/requirements/phase-3.md`, viết ADR trước khi code | ADR-001 + bảng luật bị thay thế | ~10k |
+| Phase 3 | OpenCode / Hy4 flash Free | Rewrite `types.ts`, `config.ts`, `world.ts`, `step.ts`, `output.ts`, `game.contract.json` theo v1.2 | typecheck 0 lỗi; 40 unit test pass | ~38k |
+| Phase 3 | OpenCode / Hy4 flash Free | Cập nhật GUI: fuel bar, blink 1 Hz, HUD sức chứa, bảng màu mù màu, đèn tắt xẹp + rách | Build GUI OK; FPS 60 @ 1280×720 | ~18k |
+| Phase 3 | OpenCode / Hy4 flash Free | 7 fixture mới + nâng `verify.mjs` lên v1.2 + `fps.mjs` nhận phase | 50/50 check pass, evidence `docs/proof/phase-3/` | ~16k |
+| Phase 3 | OpenCode / Hy4 flash Free | Cập nhật README/CHANGELOG/decisions/retro/AGENTS/skill, commit + tag + push | Xem `log.md` (không commit) | ~8k |
+
+### Lỗi / điểm cần cảnh giác của AI (cập nhật)
+
+- Ban đầu trừ `fuel_decay_per_s * FUEL_UNITS_PER_POINT` mỗi tick (thiếu `/60`) → hao 60 dầu/giây. Sửa bằng cách chia cho `TICKS_PER_SECOND`; unit test "99 sau 1 giây" chặn lỗi này.
+- Viết unit test kỳ vọng đèn đầy «không nhận dầu» dù decay chạy trước tương tác: sau 1 tick fuel = 99,983 nên `ceil(0,017/10) = 1`. Đổi test thành kỳ vọng đúng công thức + trường hợp `carried = 0` để kiểm tra `used = 0`. Không skip test.
+- Test refuel kỳ vọng 5400 đơn vị nhưng decay đã trừ 1 trước khi nạp → 5399. Đổi kỳ vọng và ghi chú trong test; output làm tròn vẫn đúng 90.
+- Fixture drain đặt `fuel: 40` (≥ 30) nhưng `drain` chỉ duy trì trên đèn yếu; bóng thoát `drain` ở tick đầu. Đổi `fuel: 29` và cập nhật cả kỳ vọng 23 dầu sau 1 giây (29 − 1 decay − 5 drain).
+- Verify regression Phase 1 bị lệch vì `scenario-basic.json` override `time_left_s: 300`; tưởng duration mặc định vẫn 300. Giữ fixture cũ (kỳ vọng 299) và thêm `scenario-default.json` để kiểm tra duration mặc định 240.
+- `npm run fps` ghi đúng `docs/proof/phase-3/fps.txt` nhưng dòng log vẫn in `phase-2`; sửa log dùng `proofDir`.
+- Bài học chung: khi ticket thay luật, chạy typecheck + unit test **ngay** sau khi rewrite sim rồi mới đụng vào GUI; mỗi kỳ vọng sai phải được giải thích bằng một dòng trong `decisions.md`.

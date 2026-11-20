@@ -1,8 +1,9 @@
 import type { NightSpec, Tuning, Vec3 } from './types';
 
 /**
- * Standard numbers from TICKET-02 Part 1. `game.contract.json` must mirror this
- * object; `tests/sim.test.ts` fails when the two drift apart.
+ * Standard numbers from TICKET-02 Part 1, amended by TICKET-03 (contract v1.2).
+ * `game.contract.json` must mirror this object; `tests/sim.test.ts` fails when
+ * the two drift apart.
  */
 export const TUNING: Tuning = {
   player_speed: 6,
@@ -15,9 +16,9 @@ export const TUNING: Tuning = {
   interact_radius: 2,
   pulse_cost: 3,
   pulse_radius: 5,
-  night1_duration_s: 300,
-  night2_duration_s: 330,
-  night3_duration_s: 360,
+  night1_duration_s: 240,
+  night2_duration_s: 270,
+  night3_duration_s: 300,
   flames: 3,
   invuln_s: 1.5,
   hit_drop_ratio: 0.5,
@@ -70,16 +71,32 @@ export const TUNING: Tuning = {
   wind_duration_ticks: 300,
   wind_warning_ticks: 120,
   wind_push_speed: 2,
+  // TICKET-03 (contract v1.2)
+  fuel_max: 100,
+  fuel_decay_per_s: 1.0,
+  fuel_per_mote: 10,
+  relight_cost: 5,
+  win_ratio: 0.6,
+  drain_per_s: 5,
+  low_fuel_threshold: 30,
+  capacity_max: 20,
   score: {
-    per_mote: 10,
+    per_mote: 5,
     per_lantern: 100,
+    per_relight: 40,
     per_stun: 5,
-    per_second_left: 2,
+    per_draining_stun: 15,
+    per_lantern_at_dawn: 50,
     per_flame_left: 50,
   },
 };
 
 export const TICKS_PER_SECOND = 60;
+
+/** 1 fuel unit = 1/60 of a displayed fuel point. */
+export const FUEL_UNITS_PER_POINT = TICKS_PER_SECOND;
+export const FUEL_MAX_UNITS = TUNING.fuel_max * FUEL_UNITS_PER_POINT;
+export const LOW_FUEL_UNITS = TUNING.low_fuel_threshold * FUEL_UNITS_PER_POINT;
 
 function point(x: number, y: number, z: number): Vec3 {
   return [round3(x), y, round3(z)];
