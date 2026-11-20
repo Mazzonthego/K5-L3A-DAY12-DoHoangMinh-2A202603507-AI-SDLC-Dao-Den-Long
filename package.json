@@ -12,6 +12,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "verify": "node scripts/verify.mjs",
+    "fps": "node scripts/fps.mjs",
     "prepare": "husky"
   },
   "dependencies": {

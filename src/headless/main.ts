@@ -1,5 +1,5 @@
 /**
- * Headless runner — implements Test Contract v1.0 (section B/C/E).
+ * Headless runner — implements Test Contract v1.1 (section B/C/E).
  *
  * Usage:
  *   node dist/headless.mjs --seed 7 --night 1 --ticks 4800 --out run.jsonl
@@ -80,6 +80,7 @@ function readJson<T>(path: string): T {
 
 function main(): number {
   const args = parseArgs(process.argv.slice(2));
+  if (args.night < 1 || args.night > 3) throw new UsageError('--night must be 1, 2 or 3');
   if (args.ticks < 0) throw new UsageError('--ticks must be >= 0');
   if (args.snapshotEvery < 1) throw new UsageError('--snapshot-every must be >= 1');
 
@@ -89,7 +90,7 @@ function main(): number {
 
   let world;
   try {
-    world = createWorld({ seed: args.seed, scenario });
+    world = createWorld({ seed: args.seed, night: args.night as 1 | 2 | 3, scenario });
   } catch (error) {
     throw new InputFormatError(`invalid scenario: ${(error as Error).message}`);
   }

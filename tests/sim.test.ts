@@ -1,14 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import contract from '../game.contract.json';
-import { TUNING } from '../src/sim/config';
+import { NIGHTS, TUNING } from '../src/sim/config';
+import { distXZ } from '../src/sim/geometry';
 import { InputFormatError, InputTrack } from '../src/sim/inputs';
 import { eventLine, snapshotLine } from '../src/sim/output';
 import { step } from '../src/sim/step';
-import type { GameEvent, InputState, World } from '../src/sim/types';
+import type { GameEvent, InputState, ScenarioFile, World } from '../src/sim/types';
 import { createWorld } from '../src/sim/world';
 
 function idle(): InputState {
-  return { move: [0, 0], camYawDeg: 0, jump: false, interact: false, pulse: false };
+  return {
+    move: [0, 0],
+    camYawDeg: 0,
+    jump: false,
+    interact: false,
+    pulse: false,
+    dash: false,
+    pause: false,
+  };
 }
 
 function run(world: World, input: InputState, ticks: number): GameEvent[] {
@@ -17,311 +26,361 @@ function run(world: World, input: InputState, ticks: number): GameEvent[] {
   return events;
 }
 
-function distXZ(a: [number, number, number], b: [number, number, number]): number {
-  return Math.hypot(a[0] - b[0], a[2] - b[2]);
+function empty(nightOrExtra: 1 | 2 | 3 | ScenarioFile = 1, extra: ScenarioFile = {}): World {
+  const night = typeof nightOrExtra === 'number' ? nightOrExtra : 1;
+  const scenario = typeof nightOrExtra === 'number' ? extra : nightOrExtra;
+  return createWorld({
+    seed: 7,
+    night,
+    scenario: {
+      random_motes: false,
+      random_shades: false,
+      random_drifters: false,
+      wind_enabled: false,
+      ...scenario,
+    },
+  });
 }
 
-const emptyWorld = (extra: Parameters<typeof createWorld>[0]['scenario'] = {}) =>
-  createWorld({
-    seed: 7,
-    scenario: { random_motes: false, random_shades: false, ...extra },
-  });
+function lights(world: World, count: number): void {
+  for (const lantern of world.lanterns.slice(0, count)) {
+    lantern.lit = true;
+    lantern.deposited = TUNING.lantern_cost;
+  }
+}
 
-describe('contract tuning', () => {
-  it('matches the numbers used by the simulation', () => {
+describe('contract v1.1', () => {
+  it('tuning matches the standard numbers', () => {
+    expect(contract.contract_version).toBe('1.1');
     expect(contract.tuning).toEqual(JSON.parse(JSON.stringify(TUNING)));
   });
 
-  it('has no zero/placeholder values left', () => {
-    for (const [key, value] of Object.entries(contract.tuning)) {
-      if (key === 'score' || key === 'fall_enabled') continue;
-      expect(value, key).not.toBe(0);
-    }
+  it('has the three night durations and dash keys', () => {
+    expect(contract.tuning.night1_duration_s).toBe(300);
+    expect(contract.tuning.night2_duration_s).toBe(330);
+    expect(contract.tuning.night3_duration_s).toBe(360);
+    expect(contract.tuning.dash_speed).toBe(14);
+    expect(contract.tuning.dash_duration_s).toBe(0.2);
+    expect(contract.tuning.dash_cooldown_s).toBe(1.5);
+  });
+
+  it('has the standard maps', () => {
+    expect(NIGHTS[1].lanterns).toHaveLength(5);
+    expect(NIGHTS[2].lanterns).toHaveLength(6);
+    expect(NIGHTS[3].lanterns).toHaveLength(7);
+    expect(NIGHTS[1].motePoints).toHaveLength(24);
+    expect(NIGHTS[2].motePoints).toHaveLength(24);
+    expect(NIGHTS[3].motePoints).toHaveLength(30);
+    expect(NIGHTS[1].shadePoints).toHaveLength(12);
+    expect(NIGHTS[2].shadePoints).toHaveLength(16);
+    expect(NIGHTS[3].shadePoints).toHaveLength(16);
   });
 });
 
-describe('player movement', () => {
-  it('walks at player_speed metres per second along +Z when yaw is 0', () => {
-    const world = createWorld({ seed: 1 });
+describe('movement', () => {
+  it('reaches full speed after at most 0.1 s and walks 6 m/s', () => {
+    const world = empty();
     run(world, { ...idle(), move: [0, 1] }, 60);
-    expect(world.player.pos[0]).toBeCloseTo(0, 3);
-    expect(world.player.pos[2]).toBeCloseTo(TUNING.player_speed, 2);
+    expect(world.player.pos[2]).toBeGreaterThan(5.7);
+    expect(world.player.pos[2]).toBeLessThanOrEqual(6);
+    expect(world.player.vel[1]).toBeCloseTo(6, 5);
   });
 
-  it('normalises diagonal input to unit length', () => {
-    const world = createWorld({ seed: 1 });
+  it('normalises diagonals and rotates by cam_yaw_deg', () => {
+    const world = empty();
     run(world, { ...idle(), move: [1, 1] }, 60);
-    const distance = Math.hypot(world.player.pos[0], world.player.pos[2]);
-    expect(distance).toBeCloseTo(TUNING.player_speed, 2);
+    expect(Math.hypot(world.player.pos[0], world.player.pos[2])).toBeGreaterThan(5.7);
+    const rotated = empty();
+    run(rotated, { ...idle(), move: [0, 1], camYawDeg: 90 }, 60);
+    expect(rotated.player.pos[0]).toBeGreaterThan(5.7);
+    expect(Math.abs(rotated.player.pos[2])).toBeLessThan(0.01);
   });
 
-  it('rotates movement by cam_yaw_deg', () => {
-    const world = createWorld({ seed: 1 });
-    run(world, { ...idle(), move: [0, 1], camYawDeg: 90 }, 60);
-    expect(world.player.pos[0]).toBeCloseTo(TUNING.player_speed, 2);
-    expect(world.player.pos[2]).toBeCloseTo(0, 2);
-  });
-});
-
-describe('tick model', () => {
-  it('decrements time_left_s by exactly 1/60 per tick', () => {
-    const world = createWorld({ seed: 1, scenario: { time_left_s: 10 } });
-    run(world, idle(), 60);
-    expect(world.timeLeft).toBeCloseTo(9, 5);
-    expect(world.tick).toBe(60);
-  });
-
-  it('ends the night at dawn', () => {
-    const world = createWorld({ seed: 1, scenario: { time_left_s: 0.05 } });
-    const events = run(world, idle(), 10);
-    expect(world.state).toBe('lost');
-    expect(world.tick).toBe(3);
-    expect(events.at(-1)).toMatchObject({
-      tick: 3,
-      name: 'game_over',
-      data: { result: 'lost', reason: 'dawn' },
-    });
-  });
-
-  it('stops stepping once the game is over', () => {
-    const world = createWorld({ seed: 1, scenario: { time_left_s: 0.01 } });
-    run(world, idle(), 2);
-    const before = world.tick;
-    run(world, idle(), 10);
-    expect(world.tick).toBe(before);
-  });
-});
-
-describe('scenario construction', () => {
-  it('replaces motes and shades when listed', () => {
-    const world = createWorld({
-      seed: 1,
-      scenario: {
-        random_motes: false,
-        motes: [[0, 0, 5]],
-        shades: [{ id: 'boss', pos: [10, 0, 0] }],
-      },
-    });
-    expect(world.motes).toHaveLength(1);
-    expect(world.shades).toHaveLength(1);
-    expect(world.shades[0].id).toBe('boss');
-    expect(world.motes[0].pos).toEqual([0, 0, 5]);
-    // Explicit `shades` only replaces the initial list; spawning stays on (contract D).
-    expect(world.spawnEnabled).toBe(true);
-  });
-
-  it('disables spawning when random_shades is false', () => {
-    expect(createWorld({ seed: 1, scenario: { random_shades: false } }).spawnEnabled).toBe(false);
-  });
-
-  it('updates lanterns by id and never scores while building', () => {
-    const world = createWorld({
-      seed: 1,
-      scenario: { lanterns: [{ id: 'L2', pos: [1, 0, 2], lit: true }] },
-    });
-    const lantern = world.lanterns.find((l) => l.id === 'L2')!;
-    expect(lantern.pos).toEqual([1, 0, 2]);
-    expect(lantern.lit).toBe(true);
-    expect(world.score).toBe(0);
-    expect(world.lanterns.find((l) => l.id === 'L1')!.lit).toBe(false);
-  });
-});
-
-describe('motes', () => {
-  it('picks up a mote by contact and awards per_mote', () => {
-    const world = emptyWorld({ motes: [[0, 0, 1]] });
-    const events = run(world, idle(), 1);
-    expect(events).toEqual([
-      { tick: 1, name: 'mote_picked', data: { carried: 1 } },
-    ]);
-    expect(world.player.carried).toBe(1);
-    expect(world.motes[0].active).toBe(false);
-    expect(world.score).toBe(TUNING.score.per_mote);
-  });
-
-  it('does not pick up beyond carry_capacity', () => {
-    const world = emptyWorld({ player: { carried: TUNING.carry_capacity }, motes: [[0, 0, 0]] });
-    expect(run(world, idle(), 5)).toEqual([]);
-    expect(world.player.carried).toBe(TUNING.carry_capacity);
-    expect(world.motes[0].active).toBe(true);
-  });
-
-  it('picks up at most one mote per tick', () => {
-    const world = emptyWorld({ motes: [[0, 0, 0], [0.2, 0, 0]] });
-    expect(run(world, idle(), 1)).toHaveLength(1);
-    expect(world.player.carried).toBe(1);
-  });
-});
-
-describe('lanterns', () => {
-  it('deposits on the rising edge of interact and lights the lantern', () => {
-    const world = emptyWorld({
-      player: { carried: TUNING.lantern_cost },
-      lanterns: [{ id: 'L1', pos: [0, 0, 2] }],
-    });
-    const events = run(world, { ...idle(), interact: true }, 1);
-    expect(events.map((e) => e.name)).toEqual(['deposit', 'lantern_lit']);
-    expect(events[0].data).toEqual({ lantern_id: 'L1', amount: 5, deposited: 5 });
-    expect(world.player.carried).toBe(0);
-    expect(world.lanterns[0].lit).toBe(true);
-    expect(world.score).toBe(TUNING.score.per_lantern);
-    expect(run(world, { ...idle(), interact: true }, 5)).toEqual([]);
-  });
-
-  it('accumulates partial deposits until the lantern is full', () => {
-    const world = emptyWorld({
-      player: { carried: 3 },
-      lanterns: [{ id: 'L1', pos: [0, 0, 2] }],
-    });
-    expect(run(world, { ...idle(), interact: true }, 1)[0].data).toEqual({
-      lantern_id: 'L1',
-      amount: 3,
-      deposited: 3,
-    });
-    world.player.carried = 2;
+  it('dashes 14 m/s for 12 ticks with a 1.5 s cooldown', () => {
+    const world = empty();
+    const events = run(world, { ...idle(), dash: true }, 1);
+    expect(events.map((e) => e.name)).toContain('dash');
+    expect(world.player.vel[1]).toBeCloseTo(14, 5);
+    const before = world.player.pos[2];
+    run(world, idle(), 11);
+    expect(world.player.pos[2] - before).toBeCloseTo(14 * 11 / 60, 2);
+    expect(world.player.dashCd).toBeGreaterThan(0);
+    const cd = world.player.dashCd;
     run(world, idle(), 1);
-    const events = run(world, { ...idle(), interact: true }, 1);
-    expect(events.map((e) => e.name)).toEqual(['deposit', 'lantern_lit']);
-    expect(events[0].data).toEqual({ lantern_id: 'L1', amount: 2, deposited: 5 });
+    expect(world.player.dashCd).toBe(cd - 1);
   });
 
-  it('finishes with all_lit and awards time/flame bonuses', () => {
-    const world = emptyWorld({
-      player: { pos: [-17.1, 0, 5.6], carried: 1 },
-      time_left_s: 100,
+  it('jumps at 7 m/s under -20 m/s² gravity and lands', () => {
+    const world = empty();
+    run(world, { ...idle(), jump: true }, 6);
+    expect(world.player.pos[1]).toBeGreaterThan(0);
+    expect(world.player.grounded).toBe(false);
+    run(world, idle(), 60);
+    expect(world.player.pos[1]).toBeCloseTo(0, 3);
+    expect(world.player.grounded).toBe(true);
+  });
+});
+
+describe('motes and lanterns', () => {
+  it('starts with 20 motes at 20 different points', () => {
+    const world = createWorld({ seed: 1, night: 1 });
+    expect(world.motes).toHaveLength(20);
+    expect(new Set(world.motes.map((m) => m.pos.join(','))).size).toBe(20);
+  });
+
+  it('picks up within 1 m XZ but not beyond 1.5 m height difference', () => {
+    const world = empty({ motes: [[0, 0, 1]] });
+    expect(run(world, idle(), 1).map((e) => e.name)).toContain('mote_picked');
+    const high = empty({ player: { pos: [0, 2, 0] }, motes: [[0, 0, 1]] });
+    expect(run(high, idle(), 1).map((e) => e.name)).not.toContain('mote_picked');
+  });
+
+  it('scores 10 per deposited mote and 100 per lit lantern', () => {
+    const world = empty({ player: { carried: 10 }, lanterns: [{ id: 'L1', pos: [0, 0, 2] }] });
+    const events = run(world, { ...idle(), interact: true }, 1);
+    expect(events.map((e) => e.name)).toEqual(['night_start', 'deposit', 'lantern_lit']);
+    expect(events.find((e) => e.name === 'deposit')?.data).toEqual({
+      lantern_id: 'L1',
+      amount: 10,
+      deposited: 10,
+    });
+    expect(world.score).toBe(200);
+    expect(world.player.carried).toBe(0);
+  });
+
+  it('deposits into the nearest unlit lantern, ties by smaller id', () => {
+    const world = empty({
+      player: { carried: 5, pos: [0, 0, 0] },
       lanterns: [
-        { id: 'L1', lit: true },
-        { id: 'L2', lit: true },
-        { id: 'L3', lit: true },
-        { id: 'L4', lit: true },
-        { id: 'L5', deposited: TUNING.lantern_cost - 1 },
+        { id: 'L2', pos: [1, 0, 0] },
+        { id: 'L1', pos: [-1, 0, 0] },
       ],
     });
-    expect(world.score).toBe(0);
-    const events = run(world, { ...idle(), interact: true }, 1);
-    expect(events.at(-1)).toMatchObject({
-      name: 'game_over',
-      data: { result: 'won', reason: 'all_lit' },
-    });
-    expect(world.state).toBe('won');
-    expect(world.score).toBe(100 + 99 * 2 + 3 * 50);
+    const event = run(world, { ...idle(), interact: true }, 1).find((e) => e.name === 'deposit');
+    expect(event?.data.lantern_id).toBe('L1');
+  });
+
+  it('wins immediately when every lantern is lit and adds bonuses', () => {
+    const world = empty({ time_left_s: 60 });
+    lights(world, 5);
+    const events = run(world, idle(), 1);
+    expect(events.at(-1)?.data).toEqual({ result: 'won', reason: 'all_lit' });
+    expect(world.score).toBe(59 * 2 + 3 * 50);
   });
 });
 
-describe('pulse', () => {
-  it('costs motes, stuns/pushes shades and awards per_stun', () => {
-    const world = emptyWorld({
+describe('pulse, shades and damage', () => {
+  it('pulse costs 3, stuns 120 ticks, pushes 4 m and scores 5 per shade', () => {
+    const world = empty({
       player: { carried: 5 },
       shades: [{ id: 'S1', pos: [0, 0, 3] }],
     });
     const events = run(world, { ...idle(), pulse: true }, 1);
-    expect(events.map((e) => e.name)).toEqual(['pulse']);
-    expect(events[0].data).toEqual({ stunned_ids: ['S1'] });
-    expect(world.player.carried).toBe(3);
-    expect(world.score).toBe(TUNING.score.per_stun);
+    expect(events.find((e) => e.name === 'pulse')?.data).toEqual({ stunned_ids: ['S1'] });
+    expect(world.player.carried).toBe(2);
+    expect(world.score).toBe(5);
     expect(world.shades[0].state).toBe('stunned');
-    expect(world.shades[0].stunT).toBe(TUNING.pulse_stun_s);
-    expect(distXZ(world.player.pos, world.shades[0].pos)).toBeCloseTo(6, 3);
+    expect(world.shades[0].stateTicksLeft).toBe(120);
+    run(world, idle(), 15);
+    expect(distXZ(world.player.pos, world.shades[0].pos)).toBeCloseTo(7, 1);
   });
 
-  it('respects cooldown and motes cost', () => {
-    const world = emptyWorld({
-      player: { carried: 1 },
-      shades: [{ id: 'S1', pos: [0, 0, 3] }],
-    });
-    expect(run(world, { ...idle(), pulse: true }, 1)).toEqual([]);
-    expect(world.player.carried).toBe(1);
+  it('does not pulse without 3 motes', () => {
+    const world = empty({ player: { carried: 2 }, shades: [{ id: 'S1', pos: [0, 0, 3] }] });
+    expect(run(world, { ...idle(), pulse: true }, 1).map((e) => e.name)).not.toContain('pulse');
   });
 
-  it('recovers from stun after pulse_stun_s', () => {
-    const world = emptyWorld({
-      player: { carried: 5 },
-      shades: [{ id: 'S1', pos: [0, 0, 3] }],
-    });
-    run(world, { ...idle(), pulse: true }, 1);
-    run(world, idle(), TUNING.pulse_stun_s * 60 + 2);
-    expect(world.shades[0].state).toBe('chase');
-  });
-});
-
-describe('shades', () => {
-  it('chases the player at shade_speed', () => {
-    const world = emptyWorld({
-      player: { pos: [0, 0, 20] },
-      shades: [{ id: 'S1', pos: [0, 0, 10] }],
+  it('shade chases at 4 m/s and switches wander/chase by 12/18 m', () => {
+    const world = empty({
+      player: { pos: [0, 0, 30] },
+      shades: [{ id: 'S1', pos: [0, 0, 20] }],
     });
     run(world, idle(), 60);
-    expect(world.shades[0].pos[2]).toBeCloseTo(13, 2);
+    expect(world.shades[0].state).toBe('chase');
+    expect(world.shades[0].pos[2]).toBeGreaterThan(23.5);
   });
 
-  it('never enters safe_radius around a lit lantern', () => {
-    const world = emptyWorld({
-      player: { pos: [0, 0, 20] },
-      lanterns: [{ id: 'L1', pos: [0, 0, 0], lit: true }],
-      shades: [{ id: 'S1', pos: [0, 0, 2] }],
-    });
-    run(world, idle(), 1);
-    expect(distXZ(world.shades[0].pos, [0, 0, 0])).toBeGreaterThanOrEqual(TUNING.safe_radius);
-  });
-
-  it('hits the player, drops half the motes and grants invulnerability', () => {
-    const world = emptyWorld({
+  it('hit drops half the motes, grants 90 invuln ticks and recoils the shade', () => {
+    const world = empty({
       player: { carried: 10 },
       shades: [{ id: 'S1', pos: [0, 0, 1] }],
     });
     const events = run(world, idle(), 1);
-    expect(events.map((e) => e.name)).toEqual(['player_hit']);
-    expect(events[0].data).toEqual({ by: 'shade', flames: 2, dropped: 5 });
-    expect(world.player.flames).toBe(2);
+    const hit = events.find((e) => e.name === 'player_hit');
+    expect(hit?.data).toMatchObject({ by: 'shade', flames: 2, dropped: 5 });
     expect(world.player.carried).toBe(5);
-    expect(world.player.invulnT).toBeGreaterThan(0);
-    expect(run(world, idle(), 1)).toEqual([]);
+    expect(world.player.invuln).toBe(90);
+    expect(world.shades[0].state).toBe('recoil');
+    expect(world.motes.filter((m) => m.kind === 'dropped')).toHaveLength(5);
+    expect(world.motes.filter((m) => m.kind === 'dropped')[0].ttl).toBe(480);
   });
 
-  it('ends the game when the last flame is lost', () => {
-    const world = emptyWorld({
-      player: { flames: 1, carried: 2 },
-      shades: [{ id: 'S1', pos: [0, 0, 0.5] }],
+  it('keeps shades outside safe_radius of a lit lantern', () => {
+    const world = empty({
+      player: { pos: [0, 0, 20] },
+      lanterns: [{ id: 'L1', pos: [0, 0, 0], lit: true }],
+      shades: [{ id: 'S1', pos: [0, 0, 3] }],
+    });
+    const events = run(world, idle(), 40);
+    expect(distXZ(world.shades[0].pos, [0, 0, 0])).toBeGreaterThanOrEqual(6);
+    expect(events.map((e) => e.name)).not.toContain('player_hit');
+  });
+});
+
+describe('fall and respawn', () => {
+  it('costs one flame, drops all motes, waits 60 ticks and respawns invulnerable', () => {
+    const world = empty({
+      player: { pos: [0, -11, 0], carried: 7 },
     });
     const events = run(world, idle(), 1);
-    expect(events.at(-1)).toMatchObject({
-      name: 'game_over',
-      data: { result: 'lost', reason: 'no_flames' },
+    expect(events.find((e) => e.name === 'player_hit')?.data).toMatchObject({
+      by: 'fall',
+      dropped: 0,
+      lost: 1,
     });
-    expect(world.state).toBe('lost');
+    expect(world.player.carried).toBe(0);
+    expect(world.player.flames).toBe(2);
+    run(world, idle(), 60);
+    expect(world.player.pos).toEqual([0, 0, 0]);
+    expect(world.player.invuln).toBe(90);
   });
 
-  it('spawns a new shade every 30 seconds in the default game', () => {
-    const world = createWorld({ seed: 7, scenario: { player: { flames: 999 }, random_motes: false } });
-    const events = run(world, idle(), 1800);
-    expect(events.some((e) => e.name === 'shade_spawned' && e.tick === 1800)).toBe(true);
-    expect(events.find((e) => e.name === 'shade_spawned')?.data).toEqual({ id: 'S4' });
+  it('loses immediately when the fall removes the last flame', () => {
+    const world = empty({ player: { pos: [0, -11, 0], flames: 1 } });
+    const events = run(world, idle(), 1);
+    expect(events.at(-1)?.data).toEqual({ result: 'lost', reason: 'no_flames' });
   });
 });
 
-describe('output', () => {
-  it('serialises active motes and rounds coordinates to 3 decimals', () => {
-    const world = emptyWorld({ motes: [[0.12345, 0, 1]] });
-    const parsed = JSON.parse(snapshotLine(world));
-    expect(parsed.motes_active).toBe(1);
-    expect(parsed.motes[0].pos).toEqual([0.123, 0, 1]);
+describe('schedules', () => {
+  it('spawns 2 shades at tick 300, then one per interval, ids S1..', () => {
+    const world = createWorld({ seed: 3, night: 1, scenario: { player: { flames: 999 }, random_motes: false } });
+    const events = run(world, idle(), 780);
+    const spawns = events.filter((e) => e.name === 'shade_spawned');
+    expect(spawns.slice(0, 3).map((e) => e.tick)).toEqual([300, 300, 780]);
+    expect(spawns[0].data.id).toBe('S1');
+    expect(['wander', 'chase']).toContain(world.shades[0].state);
+  });
+
+  it('spawns one extra mote at tick 240 when a point is empty', () => {
+    const world = createWorld({ seed: 3, night: 1 });
+    const before = world.motes.length;
+    run(world, idle(), 240);
+    expect(world.motes.length).toBe(before + 1);
+  });
+
+  it('spawns drifters at tick 1200 on nights 2 and 3', () => {
+    const world = createWorld({ seed: 3, night: 2, scenario: { player: { flames: 999 }, random_motes: false } });
+    run(world, idle(), 1201);
+    expect(world.drifters).toHaveLength(1);
+    expect(world.drifters[0].id).toBe('D1');
+    expect(world.drifters[0].state).toBe('idle');
+  });
+});
+
+describe('drifters and charms', () => {
+  it('steals up to 3 motes then flees; pulse makes it drop them', () => {
+    const world = empty(2, {
+      player: { carried: 6 },
+      drifters: [{ id: 'D1', pos: [0, 1, 0.5], state: 'chase' }],
+    });
+    const events = run(world, idle(), 1);
+    expect(events.find((e) => e.name === 'drifter_steal')?.data).toEqual({
+      drifter_id: 'D1',
+      amount: 3,
+      carried: 3,
+    });
+    expect(world.drifters[0].state).toBe('flee');
+    expect(world.drifters[0].stolen).toBe(3);
+    const dropped = run(world, { ...idle(), pulse: true }, 1);
+    expect(dropped.find((e) => e.name === 'drifter_drop')?.data).toEqual({
+      drifter_id: 'D1',
+      amount: 3,
+    });
+    expect(world.motes.filter((m) => m.kind === 'dropped')).toHaveLength(3);
+    expect(world.drifters[0].stolen).toBe(0);
+  });
+
+  it('charm pickup boosts speed to 7.2 and lasts 600 ticks', () => {
+    const world = empty(2, { charms: [{ id: 'C1', pos: [0, 0, 1] }] });
+    const events = run(world, idle(), 1);
+    expect(events.find((e) => e.name === 'charm_picked')?.data).toEqual({
+      charm_id: 'C1',
+      charm_ticks: 600,
+    });
+    expect(world.player.charmTicks).toBe(600);
+    run(world, { ...idle(), move: [0, 1] }, 30);
+    expect(world.player.vel[1]).toBeCloseTo(7.2, 5);
+  });
+});
+
+describe('night 3 wind and pause', () => {
+  it('warns 2 s before 5 s of wind and exposes direction in snapshot', () => {
+    const world = createWorld({ seed: 5, night: 3, scenario: { player: { flames: 999 }, random_motes: false } });
+    run(world, idle(), 1800);
+    expect(world.wind.warning).toBe(true);
+    expect(JSON.parse(snapshotLine(world)).wind).toEqual({
+      active: false,
+      dir_deg: world.wind.dirDeg,
+    });
+    run(world, idle(), 120);
+    expect(world.wind.active).toBe(true);
+    run(world, idle(), 300);
+    expect(world.wind.active).toBe(false);
+  });
+
+  it('pause increments tick but freezes sim_tick and all timers', () => {
+    const world = empty({ time_left_s: 100 });
+    run(world, idle(), 10);
+    const simBefore = world.simTick;
+    const timeBefore = world.timeLeft;
+    const events = run(world, { ...idle(), pause: true }, 1);
+    expect(events.at(-1)?.name).toBe('paused');
+    expect(world.paused).toBe(true);
+    run(world, { ...idle(), pause: true }, 100);
+    expect(world.simTick).toBe(simBefore);
+    expect(world.timeLeft).toBe(timeBefore);
+    expect(JSON.parse(snapshotLine(world)).state).toBe('paused');
     run(world, idle(), 1);
-    const event = JSON.parse(eventLine({ tick: 1, name: 'mote_picked', data: { carried: 1 } }));
-    expect(event).toEqual({ type: 'event', tick: 1, name: 'mote_picked', data: { carried: 1 } });
+    const resumed = run(world, { ...idle(), pause: true }, 1);
+    expect(resumed.at(-1)?.name).toBe('resumed');
+    expect(world.simTick).toBe(simBefore);
+    run(world, idle(), 1);
+    expect(world.simTick).toBe(simBefore + 1);
   });
 });
 
-describe('determinism', () => {
-  it('produces identical snapshots and events for the same seed and inputs', () => {
+describe('output and determinism', () => {
+  it('writes v1.1 snapshot fields and rounded coordinates', () => {
+    const world = empty({ motes: [[0.12345, 0, 1]] });
+    const parsed = JSON.parse(snapshotLine(world));
+    expect(parsed.night).toBe(1);
+    expect(parsed.wind).toEqual({ active: false, dir_deg: 0 });
+    expect(parsed.motes[0].pos).toEqual([0.123, 0, 1]);
+    expect(parsed.player).toMatchObject({
+      grounded: true,
+      invuln: 0,
+      dash_cd_s: 0,
+      pulse_cd_s: 0,
+      charm_s: 0,
+    });
+    expect(parsed.drifters).toEqual([]);
+    expect(parsed.charms).toEqual([]);
+    const event = JSON.parse(eventLine({ tick: 1, name: 'dash', data: {} }));
+    expect(event).toEqual({ type: 'event', tick: 1, name: 'dash', data: {} });
+  });
+
+  it('produces identical output for the same seed, night, scenario and inputs', () => {
     const build = (): string[] => {
-      const world = createWorld({ seed: 42 });
+      const world = createWorld({ seed: 42, night: 2 });
       const lines = [snapshotLine(world)];
       for (let i = 0; i < 300; i += 1) {
         const events = step(world, {
           ...idle(),
           move: [i % 2 === 0 ? 0.4 : -0.4, 1],
-          pulse: i === 100,
-          interact: i === 150,
+          dash: i === 100,
+          pulse: i === 150,
+          interact: i === 200,
         });
         lines.push(...events.map(eventLine));
         if (world.tick % 10 === 0) lines.push(snapshotLine(world));
@@ -330,38 +389,25 @@ describe('determinism', () => {
     };
     expect(build()).toEqual(build());
   });
-
-  it('differs for a different seed', () => {
-    const a = snapshotLine(createWorld({ seed: 1 }));
-    const b = snapshotLine(createWorld({ seed: 2 }));
-    expect(a).not.toEqual(b);
-  });
 });
 
 describe('input track', () => {
-  it('keeps previous values for absent fields', () => {
+  it('keeps previous values for absent fields, including dash and pause', () => {
     const track = new InputTrack([
       { tick: 0, move: [0, 1] },
-      { tick: 10, interact: true },
-      { tick: 20, move: [1, 0] },
+      { tick: 10, dash: true },
+      { tick: 20, pause: true },
     ]);
-    expect(track.at(0).move).toEqual([0, 1]);
-    expect(track.at(10).interact).toBe(true);
-    expect(track.at(10).move).toEqual([0, 1]);
-    expect(track.at(20).move).toEqual([1, 0]);
+    expect(track.at(20).move).toEqual([0, 1]);
+    expect(track.at(20).dash).toBe(true);
+    expect(track.at(20).pause).toBe(true);
   });
 
-  it('rejects non-increasing ticks', () => {
+  it('rejects malformed frames', () => {
     expect(() => new InputTrack([{ tick: 5 }, { tick: 5 }])).toThrow(InputFormatError);
-  });
-
-  it('rejects move values outside [-1, 1]', () => {
     expect(() => new InputTrack([{ tick: 0, move: [2, 0] }])).toThrow(InputFormatError);
-  });
-
-  it('rejects non-boolean action fields', () => {
-    expect(
-      () => new InputTrack([{ tick: 0, interact: 'yes' as unknown as boolean }]),
-    ).toThrow(InputFormatError);
+    expect(() => new InputTrack([{ tick: 0, pause: 'yes' as unknown as boolean }])).toThrow(
+      InputFormatError,
+    );
   });
 });

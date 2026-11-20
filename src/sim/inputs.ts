@@ -15,6 +15,8 @@ export class InputTrack {
     jump: false,
     interact: false,
     pulse: false,
+    dash: false,
+    pause: false,
   };
 
   constructor(frames: InputFrame[] = []) {
@@ -39,7 +41,7 @@ export class InputTrack {
       if (frame.cam_yaw_deg !== undefined && !Number.isFinite(frame.cam_yaw_deg)) {
         throw new InputFormatError(`invalid cam_yaw_deg at tick ${frame.tick}`);
       }
-      for (const key of ['jump', 'interact', 'pulse'] as const) {
+      for (const key of ['jump', 'interact', 'pulse', 'dash', 'pause'] as const) {
         if (frame[key] !== undefined && typeof frame[key] !== 'boolean') {
           throw new InputFormatError(`${key} must be boolean at tick ${frame.tick}`);
         }
@@ -48,7 +50,6 @@ export class InputTrack {
     this.frames = frames;
   }
 
-  /** Input state used by the step that produces tick `tick`. */
   at(tick: number): InputState {
     while (this.index < this.frames.length && this.frames[this.index].tick <= tick) {
       const frame = this.frames[this.index];
@@ -57,6 +58,8 @@ export class InputTrack {
       if (frame.jump !== undefined) this.state.jump = frame.jump;
       if (frame.interact !== undefined) this.state.interact = frame.interact;
       if (frame.pulse !== undefined) this.state.pulse = frame.pulse;
+      if (frame.dash !== undefined) this.state.dash = frame.dash;
+      if (frame.pause !== undefined) this.state.pause = frame.pause;
       this.index += 1;
     }
     return this.state;

@@ -1,0 +1,85 @@
+# Evidence phase-2 — Test Contract v1.1
+
+Generated on 2026-11-20T10:06:25.042Z.
+
+| Requirement | How checked | Result |
+|---|---|---|
+| Unit tests | npm test | đạt |
+| Type check | npm run typecheck | đạt |
+| Determinism | two runs, equal sha256 | đạt — 10c8bbbb6bebeba353ac8872335faa1f141982063f3176b3934167d3a81dee08 |
+| Phase 1 regression determinism | scenario-basic.json + walk.json replayed twice | đạt — 61b2ac2172494fc21bae72968608a34146ba43ea9248cc5218f35ec7622a24de |
+| Phase 1 regression: 60 ticks = 1 s | snapshot tick 60 time_left_s | đạt |
+| Phase 1 regression: speed 6 m/s | snapshot tick 60 vel | đạt |
+| Phase 1 regression: mote pickup | headless replay | đạt |
+| Phase 1 regression: 3 flames lost → game over | game_over reason no_flames | đạt |
+| Snapshot v1.1 fields | first snapshot | đạt |
+| Coordinates rounded to 3 decimals | snapshot player pos | đạt |
+| Event night_start | scenario-features.json + inputs-features.json | đạt |
+| Event mote_picked | scenario-features.json + inputs-features.json | đạt |
+| Event pulse | scenario-features.json + inputs-features.json | đạt |
+| Event dash | scenario-features.json + inputs-features.json | đạt |
+| Event deposit | scenario-features.json + inputs-features.json | đạt |
+| Event lantern_lit | scenario-features.json + inputs-features.json | đạt |
+| Event paused | scenario-features.json + inputs-features.json | đạt |
+| Event resumed | scenario-features.json + inputs-features.json | đạt |
+| Event game_over | scenario-features.json + inputs-features.json | đạt |
+| Pause freezes sim_tick | snapshots around pause frames | đạt |
+| Event tick = k+1 | event list | đạt |
+| End line | last line | đạt |
+| Drifter steal | night 2 drifter fixture | đạt |
+| Pulse makes drifter drop loot | dropped motes appear after pulse | đạt |
+| Event drifter_drop | night 2 drifter fixture | đạt |
+| Charm pickup | night 2 charm fixture | đạt |
+| Charm removes dash cooldown | two dash events within 1.5 s | đạt |
+| Fall event carries lost field | night 1 fall fixture | đạt |
+| Night 3 pad launch | player Y rises above the pad | đạt |
+| Night 3 wind warning | tick 1800 snapshot | đạt |
+| Shade spawn schedule | 2 shades at tick 300, 1 at tick 780 | đạt |
+| --night 2 accepted | headless run | đạt |
+| Full night within 30 s | 21600 ticks, night 3 | đạt — 155 ms |
+| GUI ≥ 30 FPS @ 1280×720 | npm run fps (real requestAnimationFrame) | đạt — 60 FPS |
+| Malformed inputs exit 2 | spawnSync | đạt |
+| Missing file exit 1 | spawnSync | đạt |
+| Invalid --night exit 1 | spawnSync | đạt |
+
+## Unit tests
+
+```
+> dao-den-long@0.1.0 test
+> vitest run
+
+
+ RUN  v5.1.1 E:/Vinuni/K5-L3A-DAY12-DoHoangMinh-2A202603507-AI-SDLC-Dao-Den-Long
+
+
+ Test Files  1 passed (1)
+      Tests  30 passed (30)
+   Start at  17:06:22
+   Duration  277ms (tests 45%, transform 26%, import 21%, worker 7%)
+```
+
+## Determinism
+
+- sha256 (both runs): `10c8bbbb6bebeba353ac8872335faa1f141982063f3176b3934167d3a81dee08`
+- identical: **true**
+
+## Phase 1 regression
+
+- sha256 (both runs): `61b2ac2172494fc21bae72968608a34146ba43ea9248cc5218f35ec7622a24de`
+- 60 ticks → time_left_s 299, speed 6 m/s, mote pickup and no_flames game over all preserved.
+
+## Performance
+
+21600 ticks in **155 ms** (limit 30000 ms).
+
+## GUI performance
+
+# FPS benchmark — 1280×720
+
+- Trình duyệt: C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+- Kích thước: 1280×720 (DPR 1)
+- Các mẫu FPS (mỗi mẫu trung bình 60 frame): [60,60,60]
+- FPS trung bình: **60**
+- Kết quả: **đạt** (ngưỡng ≥ 30)
+
+Đo bằng `npm run fps` (Vite + headless Edge/Chrome, requestAnimationFrame thật).

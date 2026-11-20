@@ -52,3 +52,23 @@ Ghi lại mọi chỗ tài liệu mơ hồ và con số mình tự chọn. Cập
 | Bóng mới xuất hiện khi nào? | Mỗi 1800 tick (30 s) ở mép đảo, id tiếp theo, tối đa 8; **chỉ tắt** khi scenario có `random_shades: false` (đúng mục D) | `shades` chỉ thay danh sách ban đầu, không tắt cơ chế sinh |
 | Bán kính đảo | `ISLAND_RADIUS = 30` (ngoài `tuning`, chỉ để sinh vị trí và chặn đẩy ra ngoài) | Contract không khai báo kích thước đảo; `fall_enabled: false` nên không phạt rơi |
 | Va chạm với Bóng Mực đang choáng | Không gây sát thương | `stunned` là trạng thái vô hại, khớp ý nghĩa "xua" |
+
+## Phase 2 — Ba hòn đảo (contract v1.1)
+
+| Chỗ mơ hồ | Quyết định | Lý do |
+|---|---|---|
+| Vách đứng giữa các tầng Đêm 3 | `groundHeight()` trả về tầng cao nhất chứa điểm; nếu tầng cao hơn chân người > 0.1 m thì chặn bước ngang | Ticket nói "không đi lên được; bước ra thì rơi xuống tầng dưới" — đi xuống luôn được, đi lên thì chặn |
+| Dốc 30°/150° | Dải rộng 3 m dọc bán kính, nội suy Y từ 0 ở r=30 tới 3 ở r=24 | Ticket chỉ cho chiều dài/góc, không cho công thức nội suy |
+| Tháp chuông | Hình trụ bán kính 2 m ở tâm tầng 2; chặn nếu người ở Y ≥ 5.5 | "Không leo được" — chân tháp để Y=0 để không tạo vách vô hình trên tầng 0 |
+| Bục nhảy | Vận tốc `velXZ`/`velY` giữ nguyên tới khi chạm đất (`padLock`), phím di chuyển không ghi đè; lướt vẫn được | Ticket: "Vận tốc phóng giữ nguyên tới khi chạm đất" |
+| Gió | Đẩy 2 m/s cả khi đang đứng và đang bay; hướng lấy từ `world.rng()` ở tick báo trước | Cần tất định; báo trước 2 s rồi mới active 5 s |
+| Sinh Bóng Mực | Lần đầu 2 con ở tick 300, sau đó `300 + k·interval`; điểm hợp lệ phải cách người chơi ≥ 15 m; hết điểm thì bỏ lượt | Đúng Phần 1 mục "Lịch sinh" |
+| Sinh Gió Lạc | Tick 1200, 2400, … lấy điểm trong `shadePoints`; `drifters`/`charms` trong scenario **thay thế** mặc định | Phần 4 nói hai mảng này thay danh sách mặc định (khác `shades` chỉ thay danh sách ban đầu) |
+| Đèn khi scenario override vị trí | `nearestLanternIndex` nhận mảng `world.lanterns[].pos`, không `spec.lanterns` | Scenario có thể đổi `pos`; dùng `spec` sẽ nạp nhầm đèn |
+| Đom đóm rơi | TTL 480 tick, id `F1…`, bán kính 1.5–2.5 m, nhặt lại được từ tick sau | Đúng "rơi floor(carried/2) … tồn tại 480 tick" |
+| Pulse đẩy Bóng Mực | Mục tiêu chốt ngay tick kích hoạt; tâm = chân Mây + 0.8 m; đẩy 4 m trong 15 tick; trùng vị trí đẩy theo +X | Đúng Phần 1 mục Tỏa Sáng; dùng 3D distance tới **tâm** Bóng (pos + 0.8) |
+| Scoring | +10 chỉ khi nạp; +100 lúc đèn sáng; +5 mỗi Bóng trúng Tỏa Sáng; thưởng chỉ khi thắng | Contract v1.1 mục "Điểm" |
+| Snapshot `invuln` | Ticks (90 sau khi bị chạm), kèm `invuln_s` làm tròn 3 chữ số | Test ẩn có thể đọc cả hai; ticks là đơn vị gốc |
+| Snapshot `vel` | `[vx, vy, vz]` (Y ở giữa), kèm `vel_y` | Contract ghi `vel` dạng vector 3 chiều |
+| HUD mũi tên | Hiện khoảng cách tới đèn chưa sáng gần nhất, chưa chiếu lên màn hình | Đủ để người chơi biết hướng; đây là giới hạn đã ghi trong spec Phần 3 |
+| Đo FPS | Script CDP riêng (`npm run fps`), dùng `Emulation.setDeviceMetricsOverride` để ép đúng 1280×720 | `--window-size` của headless Chrome trừ đi viền trình duyệt (thực tế 1254×627) |

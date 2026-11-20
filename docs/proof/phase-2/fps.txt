@@ -1,0 +1,9 @@
+# FPS benchmark — 1280×720
+
+- Trình duyệt: C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+- Kích thước: 1280×720 (DPR 1)
+- Các mẫu FPS (mỗi mẫu trung bình 60 frame): [60,60,60]
+- FPS trung bình: **60**
+- Kết quả: **đạt** (ngưỡng ≥ 30)
+
+Đo bằng `npm run fps` (Vite + headless Edge/Chrome, requestAnimationFrame thật).
