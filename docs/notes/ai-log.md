@@ -77,3 +77,23 @@ Ghi lại công cụ, việc đã giao, lỗi của AI và ước tính token/ch
 - Verify regression Phase 1 bị lệch vì `scenario-basic.json` override `time_left_s: 300`; tưởng duration mặc định vẫn 300. Giữ fixture cũ (kỳ vọng 299) và thêm `scenario-default.json` để kiểm tra duration mặc định 240.
 - `npm run fps` ghi đúng `docs/proof/phase-3/fps.txt` nhưng dòng log vẫn in `phase-2`; sửa log dùng `proofDir`.
 - Bài học chung: khi ticket thay luật, chạy typecheck + unit test **ngay** sau khi rewrite sim rồi mới đụng vào GUI; mỗi kỳ vọng sai phải được giải thích bằng một dòng trong `decisions.md`.
+
+## Phase 4 — «Bình minh» (contract v1.3, release v1.0.0)
+
+| Thời điểm | Công cụ / model | Việc đã giao | Kết quả | Token ước tính |
+|---|---|---|---|---|
+| Phase 4 | OpenCode / Hy4 flash Free | Đọc TICKET-04, lưu `docs/requirements/phase-4.md`, nâng hợp đồng lên v1.3 | `bench_cmd`/`soak_cmd`/`run_cmd` đúng; gameplay/output không đổi | ~8k |
+| Phase 4 | OpenCode / Hy4 flash Free | `src/leaderboard.ts`, plugin Vite API, `scripts/{run,leaderboard,bench,soak,demo}.mjs`, `dist/sim.mjs` | typecheck 0 lỗi; 43 unit test pass; benchmark/soak/export chạy thật | ~55k |
+| Phase 4 | OpenCode / Hy4 flash Free | GUI: đổi phím, phụ đề + mũi tên, giảm chuyển động, chữ lớn, form lưu điểm, bảng xếp hạng, hook bench | Build GUI OK; bench 114.2 FPS @ 1280×720 (máy local) | ~32k |
+| Phase 4 | OpenCode / Hy4 flash Free | Demo CDP screencast + ffmpeg (`docs/demo/demo.mp4`), screenshot, README/CREDITS/CHANGELOG/retro/decisions | Demo ~48 s / 1.4 MB, ảnh chụp, tài liệu release | ~18k |
+| Phase 4 | OpenCode / Hy4 flash Free | `npm run fps -- phase-4`, `npm run verify -- phase-4`, clone sạch, commit/tag/push, Release | Xem `log.md` (local, không commit) | ~12k |
+
+### Lỗi / điểm cần cảnh giác của AI (cập nhật)
+
+- Nhầm tên 12 unit test leaderboard thành `P1…` (2 ký tự) nên bộ lọc tên loại hết, board chỉ còn 3 mục. Đổi thành `Player1…`; **không** nới luật validation để chiều test.
+- `cdpClient()` trong `scripts/bench.mjs` tự tham chiếu `cdp` trước khi định nghĩa → lỗi runtime tiềm ẩn; tách hàm `send` rồi dùng cho cả `send` lẫn `evaluate`. Typecheck/build bắt được lỗi này.
+- Chạy bench lần đầu Vite watch quét `.tmp/bench-profile`, in hàng loạt `EBUSY`/page reload làm nhiễu phép đo. Thêm `server.watch.ignored` cho `.tmp/`, `dist/`, `docs/proof/`.
+- Nhầm `ffmpeg` có sẵn trên PATH; thực tế không có. Cài `ffmpeg-static` vào `.tmp/ffmpeg` (đã ignore), approve install-script rồi encode; script demo đọc `FFMPEG_PATH` nên người khác không bị phụ thuộc.
+- Đổi `vite.config.ts` import `./src/leaderboard.ts` để hết cảnh báo config loader thì `tsc` phàn nàn TS5097. Bật `allowImportingTsExtensions` trong `tsconfig.json` (vẫn `noEmit: true`) — đây là lựa chọn có chủ đích, ghi lại để không bị «sửa lại» vô tình.
+- `verify.mjs` gọi `run_cmd --export-leaderboard` nhưng lúc đầu chỉ build headless; thêm `npm run build:sim` vào bước build của verify để script tự chạy được trên clone sạch.
+- Bài học chung Phase 4: không tin exit code của PowerShell khi node/git ghi stderr; luôn đọc stdout. Mọi số liệu benchmark/soak/FPS đều phải có file bằng chứng tương ứng trước khi viết vào docs.

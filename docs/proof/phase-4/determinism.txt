@@ -1,0 +1,4 @@
+seed=7 night=1 ticks=600
+run-a sha256 3593f2bb62b52bf031bcdbf9a0f2ed497a9a2900c9d976fbe68328be9f41333b
+run-b sha256 3593f2bb62b52bf031bcdbf9a0f2ed497a9a2900c9d976fbe68328be9f41333b
+identical: true
