@@ -1,0 +1,35 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Determinism check
+        run: |
+          node dist/headless.mjs --seed 7 --night 1 \
+            --scenario tests/fixtures/scenario-basic.json \
+            --inputs tests/fixtures/walk.json \
+            --ticks 600 --out /tmp/a.jsonl
+          node dist/headless.mjs --seed 7 --night 1 \
+            --scenario tests/fixtures/scenario-basic.json \
+            --inputs tests/fixtures/walk.json \
+            --ticks 600 --out /tmp/b.jsonl
+          diff /tmp/a.jsonl /tmp/b.jsonl
+      - name: Contract exit code 2 on malformed inputs
+        run: |
+          echo '{ "frames": [ { "tick": 5 }, { "tick": 5 } ] }' > /tmp/bad.json
+          node dist/headless.mjs --seed 1 --night 1 --inputs /tmp/bad.json \
+            --ticks 10 --out /tmp/bad.jsonl && exit 1 || test $? -eq 2

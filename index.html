@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Đảo Đèn Lồng</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #070b14;
+        font-family: system-ui, sans-serif;
+        color: #f3e9d2;
+      }
+      #app {
+        position: fixed;
+        inset: 0;
+      }
+      #hud {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        padding: 10px 14px;
+        border-radius: 10px;
+        background: rgba(7, 11, 20, 0.6);
+        border: 1px solid rgba(243, 233, 210, 0.2);
+        font-size: 14px;
+        line-height: 1.6;
+        pointer-events: none;
+        white-space: pre;
+      }
+      #hint {
+        position: fixed;
+        bottom: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 13px;
+        opacity: 0.7;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="hud">Đảo Đèn Lồng</div>
+    <div id="hint">WASD / mũi tên để đi · Chuột kéo để xoay camera</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

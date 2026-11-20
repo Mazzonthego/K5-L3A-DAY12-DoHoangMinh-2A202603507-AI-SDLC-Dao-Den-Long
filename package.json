@@ -1,0 +1,29 @@
+{
+  "name": "dao-den-long",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Dao Den Long - 3D third-person game (Day 12 AI SDLC lab)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && npm run build:headless",
+    "build:headless": "esbuild src/headless/main.ts --bundle --platform=node --format=esm --outfile=dist/headless.mjs",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "verify": "node scripts/verify.mjs",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/three": "^0.187.0",
+    "esbuild": "^0.28.2",
+    "husky": "^9.1.7",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
+  }
+}

@@ -1,0 +1,5 @@
+seed=7 scenario=tests\fixtures\scenario-basic.json inputs=tests\fixtures\walk.json ticks=600
+run-a sha256 0c8d93fdeb05a7a1425979a5e7181b209f4917cada4e8b2f70118d18c8078ee0
+run-b sha256 0c8d93fdeb05a7a1425979a5e7181b209f4917cada4e8b2f70118d18c8078ee0
+identical: true
+last line: {"type":"end","ticks":600,"state":"playing","score":0}
