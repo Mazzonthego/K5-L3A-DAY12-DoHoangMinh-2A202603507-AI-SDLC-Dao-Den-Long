@@ -46,3 +46,4 @@ Everything must run on macOS/Linux after `npm ci && npm run build`.
 - Conventional commits: `feat:`, `fix:`, `test:`, `docs:`, `chore:`.
 - Keep commits small and single-purpose.
 - No secrets, no `.env`, no API keys in the repo.
+- `log.md` at repo root is a local action log: ignored by git, never commit it.

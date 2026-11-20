@@ -36,3 +36,19 @@ Ghi lại mọi chỗ tài liệu mơ hồ và con số mình tự chọn. Cập
 | `shade_speed` | 3 m/s | Chậm hơn người chơi |
 | `shade_hit_radius` | 1 m | |
 | `score.*` | 10 / 100 / 5 / 2 / 50 | per_mote / per_lantern / per_stun / per_second_left / per_flame_left |
+
+## Phase 1 — PRD-0 (chỗ mơ hồ đã tự quyết)
+
+| Chỗ mơ hồ | Quyết định | Lý do |
+|---|---|---|
+| Nhặt đom đóm tự động hay nút `E`? | **Tự nhặt khi chạm** (`dist <= pickup_radius`), tối đa 1 con/tick; `E` chỉ dùng nạp đèn | Contract chỉ định "trong bán kính r" và sự kiện `mote_picked` có `carried`; tự nhặt bao phủ cả test chỉ đi lại lẫn test bấm `E` |
+| Nạp bao nhiêu mỗi lần `E`? | `min(carried, lantern_cost - deposited)` vào đèn **chưa sáng gần nhất** | Tránh lãng phí đom đóm; khớp ý nghĩa `deposited` trong snapshot |
+| Khi nào thắng? | Ngay khi cả 5 đèn sáng → `game_over` `won` / `all_lit` | Hợp luật "thắp lại 5 đèn trước khi trời sáng" |
+| Cộng điểm thưởng khi nào? | Chỉ khi thắng: `floor(time_left_s) * per_second_left + flames * per_flame_left` | `per_second_left`/`per_flame_left` là điểm cho thời gian/lửa còn lại; thua thì không thưởng |
+| Đom đóm rơi khi bị chạm có nhặt lại được không? | **Không** — chỉ trừ `carried`, không sinh mote mới | Đơn giản, tất định, dễ kiểm `dropped` trong test ẩn |
+| Pulse không trúng bóng nào? | Vẫn trừ `pulse_cost`, bắt đầu hồi chiêu và ghi event `pulse` với `stunned_ids: []` | Hành động có giá và có hệ quả rõ ràng |
+| Choáng tính từ tick nào? | Lưu `stunnedAtTick`; `stunT` đúng `pulse_stun_s` ở tick pulse, giảm dần các tick sau | Tránh mất 1/60 s ngay tại tick kích hoạt |
+| Bóng Mực đuổi như thế nào? | Mỗi tick tiến về phía người chơi đúng `shade_speed / 60` mét, không vượt mục tiêu; bị đẩy ra rìa vùng an toàn của đèn sáng | Tất định, đúng đơn vị mét/giây và nghĩa `safe_radius` |
+| Bóng mới xuất hiện khi nào? | Mỗi 1800 tick (30 s) ở mép đảo, id tiếp theo, tối đa 8; **chỉ tắt** khi scenario có `random_shades: false` (đúng mục D) | `shades` chỉ thay danh sách ban đầu, không tắt cơ chế sinh |
+| Bán kính đảo | `ISLAND_RADIUS = 30` (ngoài `tuning`, chỉ để sinh vị trí và chặn đẩy ra ngoài) | Contract không khai báo kích thước đảo; `fall_enabled: false` nên không phạt rơi |
+| Va chạm với Bóng Mực đang choáng | Không gây sát thương | `stunned` là trạng thái vô hại, khớp ý nghĩa "xua" |

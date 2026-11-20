@@ -68,7 +68,8 @@ function readJson<T>(path: string): T {
   try {
     text = readFileSync(path, 'utf8');
   } catch (error) {
-    throw new InputFormatError(`cannot read ${path}: ${(error as Error).message}`);
+    // A missing/unreadable file is a usage error (exit 1), not a malformed file (exit 2).
+    throw new UsageError(`cannot read ${path}: ${(error as Error).message}`);
   }
   try {
     return JSON.parse(text) as T;
@@ -86,7 +87,12 @@ function main(): number {
   const frames = args.inputs ? parseInputs(readJson<unknown>(args.inputs)) : [];
   const track = new InputTrack(frames);
 
-  const world = createWorld({ seed: args.seed, scenario });
+  let world;
+  try {
+    world = createWorld({ seed: args.seed, scenario });
+  } catch (error) {
+    throw new InputFormatError(`invalid scenario: ${(error as Error).message}`);
+  }
   const lines: string[] = [snapshotLine(world)];
 
   for (let k = 0; k < args.ticks && world.state === 'playing'; k += 1) {

@@ -38,6 +38,15 @@ export const TUNING: Tuning = {
 /** Radius of the island floor, in metres (not part of the tuning contract). */
 export const ISLAND_RADIUS = 30;
 
+/**
+ * One extra shade joins every 30 seconds (1800 ticks) in the default game,
+ * spawned on the island rim with world.rng. Disabled only when a scenario sets
+ * `random_shades: false` (contract section D); an explicit `shades` list only
+ * replaces the initial shades.
+ */
+export const SHADE_SPAWN_INTERVAL_TICKS = 1800;
+export const MAX_SHADES = 8;
+
 /** Where the five lanterns stand on night 1 (contract ids L1..L5). */
 export const LANTERN_POSITIONS: Array<[number, number, number]> = [
   [0, 0, 18],

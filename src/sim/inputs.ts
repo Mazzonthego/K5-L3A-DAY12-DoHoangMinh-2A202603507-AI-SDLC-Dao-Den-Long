@@ -27,7 +27,10 @@ export class InputTrack {
         throw new InputFormatError(`frame ticks must strictly increase (tick ${frame.tick})`);
       }
       previous = frame.tick;
-      if (frame.move) {
+      if (frame.move !== undefined) {
+        if (!Array.isArray(frame.move) || frame.move.length !== 2) {
+          throw new InputFormatError(`move must be a [x, z] pair at tick ${frame.tick}`);
+        }
         const [x, z] = frame.move;
         if (!Number.isFinite(x) || !Number.isFinite(z) || Math.abs(x) > 1 || Math.abs(z) > 1) {
           throw new InputFormatError(`move must be within [-1, 1] at tick ${frame.tick}`);
@@ -35,6 +38,11 @@ export class InputTrack {
       }
       if (frame.cam_yaw_deg !== undefined && !Number.isFinite(frame.cam_yaw_deg)) {
         throw new InputFormatError(`invalid cam_yaw_deg at tick ${frame.tick}`);
+      }
+      for (const key of ['jump', 'interact', 'pulse'] as const) {
+        if (frame[key] !== undefined && typeof frame[key] !== 'boolean') {
+          throw new InputFormatError(`${key} must be boolean at tick ${frame.tick}`);
+        }
       }
     }
     this.frames = frames;

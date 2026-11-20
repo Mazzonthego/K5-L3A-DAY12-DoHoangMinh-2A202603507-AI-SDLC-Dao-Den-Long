@@ -32,12 +32,17 @@ export function createWorld({ seed, scenario = {} }: CreateWorldOptions): World 
       flames: scenario.player?.flames ?? tuning.flames,
       carried: scenario.player?.carried ?? 0,
       invulnT: 0,
+      pulseCooldownT: 0,
     },
     motes: [],
     shades: [],
     lanterns: [],
     tuning,
     rng,
+    prevInteract: false,
+    prevPulse: false,
+    nextShadeId: 1,
+    spawnEnabled: false,
   };
 
   world.lanterns = LANTERN_POSITIONS.map((pos, i) => ({
@@ -56,8 +61,15 @@ export function createWorld({ seed, scenario = {} }: CreateWorldOptions): World 
 
   world.motes = buildMotes(world, scenario);
   world.shades = buildShades(world, scenario);
+  world.nextShadeId = Math.max(0, ...world.shades.map(shadeIdNumber)) + 1;
+  world.spawnEnabled = scenario.random_shades !== false;
 
   return world;
+}
+
+function shadeIdNumber(shade: Shade): number {
+  const match = /^S(\d+)$/.exec(shade.id);
+  return match ? Number(match[1]) : 0;
 }
 
 function buildMotes(world: World, scenario: ScenarioFile): Mote[] {
@@ -87,6 +99,7 @@ function buildShades(world: World, scenario: ScenarioFile): Shade[] {
       pos: [...s.pos],
       state: 'chase',
       stunT: 0,
+      stunnedAtTick: -1,
     }));
   }
   if (scenario.random_shades === false) return [];
@@ -101,6 +114,7 @@ function buildShades(world: World, scenario: ScenarioFile): Shade[] {
       ],
       state: 'chase',
       stunT: 0,
+      stunnedAtTick: -1,
     };
   });
 }

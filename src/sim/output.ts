@@ -26,6 +26,9 @@ export function snapshotLine(world: World): string {
       pos: shade.pos.map(round3),
       state: shade.state,
     })),
+    motes: world.motes
+      .filter((mote) => mote.active)
+      .map((mote) => ({ id: mote.id, pos: mote.pos.map(round3) })),
     motes_active: world.motes.filter((mote) => mote.active).length,
   });
 }

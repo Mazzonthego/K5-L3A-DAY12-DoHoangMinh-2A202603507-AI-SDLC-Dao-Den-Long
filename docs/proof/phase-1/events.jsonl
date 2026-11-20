@@ -1,0 +1,14 @@
+{"type":"event","tick":1,"name":"mote_picked","data":{"carried":1}}
+{"type":"event","tick":2,"name":"mote_picked","data":{"carried":2}}
+{"type":"event","tick":3,"name":"mote_picked","data":{"carried":3}}
+{"type":"event","tick":4,"name":"mote_picked","data":{"carried":4}}
+{"type":"event","tick":5,"name":"mote_picked","data":{"carried":5}}
+{"type":"event","tick":6,"name":"mote_picked","data":{"carried":6}}
+{"type":"event","tick":6,"name":"deposit","data":{"lantern_id":"L1","amount":5,"deposited":5}}
+{"type":"event","tick":6,"name":"lantern_lit","data":{"lantern_id":"L1"}}
+{"type":"event","tick":7,"name":"mote_picked","data":{"carried":2}}
+{"type":"event","tick":11,"name":"pulse","data":{"stunned_ids":["S1"]}}
+{"type":"event","tick":96,"name":"player_hit","data":{"by":"shade","flames":2,"dropped":0}}
+{"type":"event","tick":187,"name":"player_hit","data":{"by":"shade","flames":1,"dropped":0}}
+{"type":"event","tick":278,"name":"player_hit","data":{"by":"shade","flames":0,"dropped":0}}
+{"type":"event","tick":278,"name":"game_over","data":{"result":"lost","reason":"no_flames"}}

@@ -1,0 +1,6 @@
+seed=7 scenario=tests\fixtures\scenario-play.json inputs=tests\fixtures\inputs-play.json ticks=600
+run-a sha256 1145a4916f16edaf969d85afc7f4dce018da2c754f5a54b602b963282cf2f196
+run-b sha256 1145a4916f16edaf969d85afc7f4dce018da2c754f5a54b602b963282cf2f196
+identical: true
+events: mote_picked, deposit, lantern_lit, pulse, player_hit, game_over
+last line: {"type":"end","ticks":278,"state":"lost","score":175}

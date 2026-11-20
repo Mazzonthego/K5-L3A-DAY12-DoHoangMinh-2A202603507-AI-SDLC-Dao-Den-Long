@@ -52,6 +52,8 @@ export interface Shade {
   pos: Vec3;
   state: ShadeState;
   stunT: number;
+  /** Tick when the current stun started; keeps a fresh stun at full length. */
+  stunnedAtTick: number;
 }
 
 export interface Lantern {
@@ -66,6 +68,8 @@ export interface Player {
   flames: number;
   carried: number;
   invulnT: number;
+  /** Remaining pulse cooldown in seconds. */
+  pulseCooldownT: number;
 }
 
 export interface GameEvent {
@@ -87,6 +91,13 @@ export interface World {
   lanterns: Lantern[];
   tuning: Tuning;
   rng: () => number;
+  /** Rising-edge detection for interact/pulse (contract section C). */
+  prevInteract: boolean;
+  prevPulse: boolean;
+  /** Next id for dynamically spawned shades, e.g. S4. */
+  nextShadeId: number;
+  /** Dynamic spawning is disabled only by `random_shades: false` (contract D). */
+  spawnEnabled: boolean;
 }
 
 export interface InputFrame {
